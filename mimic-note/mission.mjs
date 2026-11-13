@@ -23,7 +23,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  NOTE_DIR, REPO, loadMembers, requireMember, loadDb, openMissions, doneMissions, setLowPriority,
+  NOTE_DIR, REPO, ADMIN_ROLES, loadMembers, requireMember, loadDb, openMissions, doneMissions, setLowPriority,
   parseMissionList, setMissions, addMissions, completeMissions, memberByGithub, validateDb, validateMembers,
 } from './lib.mjs';
 import { createGithub, DB_FILE, MEMBERS_FILE, waitForNotify, formatNotify } from './github.mjs';
@@ -47,16 +47,29 @@ function listOf(member, db) {
 // as: 코어 오브 미믹노트 봇이 텔레그램 연결(일회용 코드)로 확인한 팀원 아이디 — 이때는 gh 계정은 저장만 하고, 권한은 그 팀원 역할로 본다.
 export async function mutate(github, apply, describe, { as = null, via = null } = {}) {
   const login = github.whoami();
-  if (!github.access().push) {
+  const access = github.access();
+  if (!access.push) {
     throw new Error(`GitHub 계정 ${login} 은 ${REPO} 쓰기 권한이 없어 미션을 바꿀 수 없습니다. 초대를 수락했는지 확인하거나, 권한 있는 계정으로 gh auth switch 하세요.`);
   }
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const members = JSON.parse(github.readFile(MEMBERS_FILE).text).members;
+    const mf = github.readFile(MEMBERS_FILE);
+    const members = JSON.parse(mf.text).members;
     const merr = validateMembers(members);
     if (merr.length) throw new Error(`팀원 명부(members.json)가 올바르지 않아 멈췄습니다: ${merr.join(' · ')}`);
+    const { text, sha } = github.readFile(DB_FILE);
+    if (as) {
+      // 봇 저장: 저장하는 gh 계정이 GitHub Actions 확인을 통과할 수 있어야 하고(저장소 관리자 또는 관리자 팀원),
+      // main 에 확인 안 된 변경이 있으면 저장하지 않는다 — 그 변경을 이 계정의 저장으로 "승인"해 버리지 않게.
+      const saver = memberByGithub(login, members);
+      if (!access.admin && !ADMIN_ROLES.has(saver?.role)) throw new Error(`봇이 저장에 쓰는 GitHub 계정(${login})은 저장소 관리자이거나 관리자 팀원이어야 합니다.`);
+      const v = github.verifiedSha();
+      if (!v) throw new Error('GitHub Actions 의 확인 상태를 알 수 없어 저장을 멈췄어요. 잠시 뒤 다시 해 주세요.');
+      if (github.readFile(MEMBERS_FILE, v).sha !== mf.sha || github.readFile(DB_FILE, v).sha !== sha) {
+        throw new Error('main 에 아직 확인되지 않은 변경이 있어 저장을 멈췄어요(방금 저장한 내용을 처리 중이거나 관리자 확인이 필요). 잠시 뒤 다시 해 주세요.');
+      }
+    }
     const actor = as ? members.find((m) => m.id === as) || null : memberByGithub(login, members);
     if (!actor) throw new Error(as ? `명부에 없는 팀원입니다: ${as}` : `GitHub 계정 ${login} 이 팀원 명부(members.json 의 github)에 없습니다. 대표관리자에게 등록을 요청하세요.`);
-    const { text, sha } = github.readFile(DB_FILE);
     const db = JSON.parse(text);
     const before = validateDb(db, members);
     if (before.length) throw new Error(`GitHub 의 미션 DB 가 올바르지 않아 멈췄습니다: ${before.join(' · ')}`);

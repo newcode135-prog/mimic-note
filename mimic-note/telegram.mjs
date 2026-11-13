@@ -73,7 +73,7 @@ function saveCodes(codes) {
   fs.writeFileSync(codesFile(), JSON.stringify({ codes }, null, 2), { mode: 0o600 });
 }
 
-function secretNames() {
+export function secretNames() {
   try {
     return new Set(JSON.parse(execFileSync('gh', ['secret', 'list', '-R', REPO, '--json', 'name'], { encoding: 'utf8', stdio: 'pipe' })).map((s) => s.name));
   } catch {
@@ -98,7 +98,7 @@ export async function applyLink(l, { members, codes, token, log = console.log })
   setEnvVar(ENV_FILE, secretName(m.id), l.chatId);
   const ok = setSecret(secretName(m.id), l.chatId);
   saveCodes(codes);
-  await telegramApi(token, 'sendMessage', { chat_id: l.chatId, text: `✅ 미믹노트 연결 완료 — ${m.name}님의 미션 알림이 이 대화로 와요.` }).catch(() => {});
+  await telegramApi(token, 'sendMessage', { chat_id: l.chatId, text: ok ? `✅ 미믹노트 연결 완료 — ${m.name}님의 미션 알림이 이 대화로 와요.` : `✅ ${m.name}님 연결은 됐어요. 자동 알림 등록은 관리자 확인이 필요해요(그동안 버튼으로 미션을 받을 수 있어요).` }).catch(() => {});
   log(`   ✅ ${m.name} 연결됨 — 텔레그램 이름: ${l.who || '(이름 없음)'}${ok ? ' · GitHub 비밀값 등록' : ' · GitHub 비밀값 등록은 실패(위 안내 참고)'}`);
   log('      본인이 맞는지 이름을 확인하세요. 아니면: node mimic-note/telegram.mjs connect --relink ' + m.id);
   if (ok) {
@@ -184,6 +184,11 @@ async function connect(names, { relink = false, minutes = 10, wait = true } = {}
     console.log(`   ${m.name}: https://t.me/${me.username}?start=${code}`);
   }
   saveCodes(codes);
+  // 이 컴퓨터에서 코어 오브 미믹노트 봇이 돌고 있으면 기다리지 않는다(같은 봇의 업데이트를 빼앗지 않게)
+  try {
+    const { pid } = JSON.parse(fs.readFileSync(path.join(HOME_DIR(), 'core-bot.lock'), 'utf8'));
+    if (wait && pid) { process.kill(pid, 0); console.log('   이 컴퓨터에서 코어 오브 미믹노트 봇이 켜져 있어 기다리지 않습니다 — 팀원이 링크로 [시작]하면 봇이 연결합니다.'); wait = false; }
+  } catch { /* 봇 없음 */ }
   if (!wait) {
     console.log('③ 기다리지 않습니다(--no-wait). 코어 오브 미믹노트 봇(node mimic-note/bot.mjs)이 이 컴퓨터에서 켜져 있으면 팀원이 [시작]할 때 봇이 연결합니다.');
     return;
@@ -200,7 +205,7 @@ async function connect(names, { relink = false, minutes = 10, wait = true } = {}
     try {
       updates = await telegramApi(token, 'getUpdates', { timeout: 25, offset, allowed_updates: ['message'] });
     } catch (e) {
-      if (e.code === 409) throw new Error('코어 오브 미믹노트 봇(bot.mjs)이 켜져 있어 여기서는 기다릴 수 없습니다. --no-wait 로 링크만 만들면 연결은 봇이 처리합니다.');
+      if (e.code === 409) throw new Error('같은 봇이 다른 곳(다른 컴퓨터의 bot.mjs)에서 켜져 있어 여기서는 기다릴 수 없습니다. 봇이 켜진 그 컴퓨터에서 node mimic-note/telegram.mjs connect --no-wait 를 실행하세요(연결 코드는 그 컴퓨터에 있어야 봇이 확인할 수 있음).');
       throw e;
     }
     if (!updates.length) continue;

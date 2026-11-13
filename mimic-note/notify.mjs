@@ -400,6 +400,7 @@ async function main() {
 
   console.log(`미믹노트 알림: 이벤트 ${env.EVENT_NAME} · main ${r.head.slice(0, 7)} · 확인된 상태 ${String(r.verified).slice(0, 7)}`);
   console.log(`MIMIC_COVERS ${JSON.stringify(r.covered)}`);
+  if (r.ledger.verifiedSha) console.log(`MIMIC_VERIFIED ${r.ledger.verifiedSha}`); // 봇이 "확인된 상태"를 읽는 줄
   for (const x of r.results) console.log(`MIMIC_RESULT ${JSON.stringify(x)}`);
   if (!r.results.length) console.log('보낼 대상 없음(바뀐 팀원·보류된 알림 없음)');
   for (const p of r.problems) {
