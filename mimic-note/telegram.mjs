@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // 미믹노트 텔레그램 연결 — 저장소 주인(GitHub 비밀값을 등록할 수 있는 계정)이 자기 터미널에서 직접 실행한다.
 //
-//   node mimic-note/telegram.mjs connect [이름 …] [--relink] [--minutes 10]
+//   node mimic-note/telegram.mjs connect [이름 …] [--relink] [--minutes 10] [--no-wait]
 //       ① 봇 토큰 확인(.env 에 없으면 화면에 안 보이게 입력) → getMe 로 진짜 봇인지 확인
 //       ② 아직 연결 안 된 팀원마다 일회용 연결 링크(t.me/<봇>?start=<코드>, 24시간) 출력 → 각자에게 개인적으로 전달
 //       ③ 팀원이 링크를 눌러 [시작]하면 /start <코드> 가 오고, 코드를 확인한 뒤에만 그 chat id 를 그 팀원에게 연결
 //          (코드 없는 /start, 쓴 코드, 만료 코드, 단체방, 이미 다른 팀원으로 연결된 계정은 거절)
 //       ④ chat id 를 .env 와 GitHub 비밀값 TELEGRAM_CHAT_ID_<아이디> 에 등록(팀원마다 따로라 서로 덮어쓰지 않음)
+//       --no-wait: 링크만 만들고 기다리지 않음(코어 오브 미믹노트 봇 bot.mjs 가 켜져 있으면 연결은 봇이 처리)
 //   node mimic-note/telegram.mjs status            연결 상태(아이디는 보여 주지 않음)
 //   node mimic-note/telegram.mjs resend <이름>      같은 내용이어도 GitHub Actions 로 다시 보내고 결과 확인
 //
@@ -64,7 +65,7 @@ export function setEnvVar(file, key, value) {
 }
 
 const codesFile = () => path.join(HOME_DIR(), 'telegram-codes.json');
-function loadCodes() {
+export function loadCodes() {
   try { return Object.assign(Object.create(null), JSON.parse(fs.readFileSync(codesFile(), 'utf8')).codes); } catch { return Object.create(null); }
 }
 function saveCodes(codes) {
@@ -89,6 +90,21 @@ function setSecret(name, value) {
     console.log(`     → 저장소 주인 계정으로 바꾸고(gh auth switch -u newcode135-prog) 다시 실행하거나, GitHub → Settings → Secrets and variables → Actions 에서 ${name} 를 직접 등록하세요.`);
     return false;
   }
+}
+
+// 연결 하나를 반영: .env + GitHub 비밀값 + 코드 저장 + 확인 메시지 + 지금 미션 발송 요청(Actions)
+export async function applyLink(l, { members, codes, token, log = console.log }) {
+  const m = members.find((x) => x.id === l.member);
+  setEnvVar(ENV_FILE, secretName(m.id), l.chatId);
+  const ok = setSecret(secretName(m.id), l.chatId);
+  saveCodes(codes);
+  await telegramApi(token, 'sendMessage', { chat_id: l.chatId, text: `✅ 미믹노트 연결 완료 — ${m.name}님의 미션 알림이 이 대화로 와요.` }).catch(() => {});
+  log(`   ✅ ${m.name} 연결됨 — 텔레그램 이름: ${l.who || '(이름 없음)'}${ok ? ' · GitHub 비밀값 등록' : ' · GitHub 비밀값 등록은 실패(위 안내 참고)'}`);
+  log('      본인이 맞는지 이름을 확인하세요. 아니면: node mimic-note/telegram.mjs connect --relink ' + m.id);
+  if (ok) {
+    try { createGithub().dispatch(m.id, false); log('      → 지금 미션을 보내도록 GitHub Actions 에 요청했습니다.'); } catch (e) { log(`      → 미션 발송 요청 실패: ${e.message}`); }
+  }
+  return { member: m, ok };
 }
 
 async function askHidden(prompt) {
@@ -121,7 +137,7 @@ async function askHidden(prompt) {
   });
 }
 
-async function connect(names, { relink = false, minutes = 10 } = {}) {
+async function connect(names, { relink = false, minutes = 10, wait = true } = {}) {
   const members = loadMembers();
   let env = readEnv(ROOT, process.env);
   let token = env.TELEGRAM_BOT_TOKEN;
@@ -168,6 +184,10 @@ async function connect(names, { relink = false, minutes = 10 } = {}) {
     console.log(`   ${m.name}: https://t.me/${me.username}?start=${code}`);
   }
   saveCodes(codes);
+  if (!wait) {
+    console.log('③ 기다리지 않습니다(--no-wait). 코어 오브 미믹노트 봇(node mimic-note/bot.mjs)이 이 컴퓨터에서 켜져 있으면 팀원이 [시작]할 때 봇이 연결합니다.');
+    return;
+  }
 
   // 이미 연결된 chat id(같은 사람이 두 팀원으로 연결되는 것 방지). --relink 대상은 자기 자리를 비운다.
   const chatOwners = new Map(members.filter((m) => !targets.includes(m) || !relink).map((m) => [String(chatIdFor(m.id, env) || ''), m.id]).filter(([c]) => c));
@@ -176,22 +196,19 @@ async function connect(names, { relink = false, minutes = 10 } = {}) {
   console.log(`③ 연결을 기다립니다(최대 ${minutes}분, Ctrl+C 로 멈춤 — 나중에 같은 명령을 다시 실행하면 이어서 기다립니다).`);
   let offset;
   while (waiting.size && Date.now() < deadline) {
-    const updates = await telegramApi(token, 'getUpdates', { timeout: 25, offset, allowed_updates: ['message'] });
+    let updates;
+    try {
+      updates = await telegramApi(token, 'getUpdates', { timeout: 25, offset, allowed_updates: ['message'] });
+    } catch (e) {
+      if (e.code === 409) throw new Error('코어 오브 미믹노트 봇(bot.mjs)이 켜져 있어 여기서는 기다릴 수 없습니다. --no-wait 로 링크만 만들면 연결은 봇이 처리합니다.');
+      throw e;
+    }
     if (!updates.length) continue;
     offset = updates.at(-1).update_id + 1;
     const r = processUpdates(updates, { codes, chatOwners, now: Date.now() });
     for (const l of r.links) {
-      const m = members.find((x) => x.id === l.member);
-      setEnvVar(ENV_FILE, secretName(m.id), l.chatId);
-      const ok = setSecret(secretName(m.id), l.chatId);
-      saveCodes(codes);
-      waiting.delete(m.id);
-      await telegramApi(token, 'sendMessage', { chat_id: l.chatId, text: `✅ 미믹노트 연결 완료 — ${m.name}님의 미션 알림이 이 대화로 와요.` }).catch(() => {});
-      console.log(`   ✅ ${m.name} 연결됨 — 텔레그램 이름: ${l.who || '(이름 없음)'}${ok ? ' · GitHub 비밀값 등록' : ' · GitHub 비밀값 등록은 실패(위 안내 참고)'}`);
-      console.log('      본인이 맞는지 이름을 확인하세요. 아니면: node mimic-note/telegram.mjs connect --relink ' + m.id);
-      if (ok) {
-        try { createGithub().dispatch(m.id, false); console.log('      → 지금 미션을 보내도록 GitHub Actions 에 요청했습니다(결과: node mimic-note/telegram.mjs status 또는 Actions 기록).'); } catch (e) { console.log(`      → 미션 발송 요청 실패: ${e.message}`); }
-      }
+      await applyLink(l, { members, codes, token });
+      waiting.delete(l.member);
     }
     saveCodes(codes);
     for (const x of r.replies) await telegramApi(token, 'sendMessage', { chat_id: x.chatId, text: x.text }).catch(() => {});
@@ -234,7 +251,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const minutes = mi !== -1 ? Math.max(1, Math.min(120, Number(args[mi + 1]) || 10)) : 10;
   const names = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--minutes').slice(1);
   const cmd = args[0];
-  const job = cmd === 'connect' ? connect(names, { relink: flags.has('--relink'), minutes })
+  const job = cmd === 'connect' ? connect(names, { relink: flags.has('--relink'), minutes, wait: !flags.has('--no-wait') })
     : cmd === 'status' ? Promise.resolve(status())
       : cmd === 'resend' ? resend(names[0])
         : Promise.reject(new Error('사용법: node mimic-note/telegram.mjs connect [이름 …] [--relink] | status | resend <이름>'));

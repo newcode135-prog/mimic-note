@@ -926,3 +926,38 @@ test('완료 알림 리뷰 회귀: "방금 완료" 줄 때문에 거절되면 �
   assert.equal(ledger.members.minho.justDone, undefined);
   assert.equal(ledger.members.minho.pending, false);
 });
+
+// ---------------- 코어 오브 미믹노트 봇 ----------------
+
+test('봇: 버튼판은 팀원 이름+봇, 한 줄에 3개, 늘 떠 있음', async () => {
+  const { menuKeyboard } = await import('../mimic-note/bot.mjs');
+  assert.deepEqual(menuKeyboard(M), {
+    keyboard: [[{ text: '창민봇' }, { text: '민호봇' }, { text: '유리봇' }], [{ text: '네이뜬봇' }, { text: '루카스봇' }]],
+    resize_keyboard: true,
+    is_persistent: true,
+  });
+});
+
+test('봇: 본인 버튼이면 미션, 남의 버튼은 거절, 미연결은 연결 안내, 단체방은 무시, /start 는 메뉴, /start 코드는 연결', async () => {
+  const { decide, missionsText, menuText } = await import('../mimic-note/bot.mjs');
+  const chatOwners = new Map([['1002', 'minho'], ['1003', 'yuri']]);
+  const msg = (id, text, type = 'private') => ({ chat: { id, type }, text });
+  const d = (m) => decide(m, { members: M, chatOwners });
+  assert.deepEqual(d(msg(1002, '민호봇')), { kind: 'missions', chatId: '1002', member: M[1] });
+  assert.deepEqual(d(msg(1002, '/me')), { kind: 'missions', chatId: '1002', member: M[1] });
+  assert.equal(d(msg(1002, '창민봇')).kind, 'deny');
+  assert.equal(d(msg(1002, '창민봇')).target.id, 'changmin');
+  assert.equal(d(msg(9999, '루카스봇')).kind, 'unlinked');
+  assert.equal(d(msg(1002, '민호봇', 'group')).kind, 'ignore');
+  assert.equal(d({ chat: { id: 1002, type: 'private' } }).kind, 'ignore');
+  assert.deepEqual(d(msg(1003, '/start')), { kind: 'menu', chatId: '1003', owner: M[2] });
+  assert.equal(d(msg(1003, '안녕')).kind, 'menu');
+  assert.equal(d(msg(9999, '/start s0xEsKkHmJ2289e1')).kind, 'link');
+  const db = empty();
+  setMissions(db, '민호', list3, 'changmin', M, T);
+  const t = missionsText(M[1], db);
+  assert.ok(t.startsWith(renderTelegram(M[1], db)));
+  assert.match(t, /<code>민호 미션완료 1<\/code>/);
+  assert.match(menuText(M[1]), /코어 오브 미믹노트[\s\S]*<b>민호봇<\/b>/);
+  assert.match(menuText(null), /본인 연결 링크/);
+});

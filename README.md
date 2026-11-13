@@ -30,6 +30,10 @@
 
 입력하면 GitHub 에 바로 저장되고, GitHub Actions 가 **미션이 바뀐 팀원에게만** 그 사람 텔레그램으로 최신 미션을 보냅니다. 자세한 동작·권한·한계: [`mimic-note/README.md`](mimic-note/README.md)
 
+## 버튼으로 내 미션 받기 — 코어 오브 미믹노트 봇
+
+텔레그램 봇 대화창 아래의 **[창민봇] [민호봇] [유리봇] [네이뜬봇] [루카스봇]** 중 본인 버튼을 누르면 지금 보고할 미션이 옵니다(남의 버튼은 거절). 봇은 항상 켜진 컴퓨터 한 대에서 `node mimic-note/bot.mjs` (맥미니: `bash mimic-note/bot-install-macmini.sh`).
+
 ## 처음 한 번
 
 ```bash
