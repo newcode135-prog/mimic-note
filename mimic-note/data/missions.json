@@ -151,10 +151,11 @@
       "order": 5,
       "title": "텔레그램 알림 받기",
       "detail": "창민님이 봇을 연결하면(M-0005) 봇에게 /start 를 보내고, chat id 를 창민님에게 개인적으로 전달해요. chat id 는 저장소·단체방에 쓰지 않아요.",
-      "status": "todo",
+      "status": "done",
       "createdBy": "changmin",
       "createdAt": "2026-11-13T03:05:05.978Z",
-      "doneAt": null
+      "doneAt": "2026-11-13T12:19:16.158Z",
+      "doneBy": "yuri"
     },
     {
       "id": "M-0014",
