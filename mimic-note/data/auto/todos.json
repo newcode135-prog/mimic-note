@@ -1,0 +1,36 @@
+{
+  "rulesVersion": "rules-v1",
+  "generatedAt": "2026-11-12T22:32:42.835Z",
+  "players": {
+    "changmin": {
+      "important": [],
+      "todos": [
+        "[미션 M-0004] 맥미니 켜기",
+        "[미션 M-0005] 텔레그램 봇 연결",
+        "[미션 M-0006] 대전제 v0.2 검토",
+        "[미션 M-0007] '데이터'가 무엇인지 정하기",
+        "[미션 M-0008] 플레이어 미션 등록"
+      ]
+    },
+    "minho": {
+      "important": [],
+      "todos": [
+        "[미션 M-0001] 텔레그램 봇 만들기",
+        "[미션 M-0002] 봇에게 /start 보내기",
+        "[미션 M-0003] 토큰·chat id 전달하고 비밀값 등록"
+      ]
+    },
+    "yuri": {
+      "important": [],
+      "todos": []
+    },
+    "nathan": {
+      "important": [],
+      "todos": []
+    },
+    "lucas": {
+      "important": [],
+      "todos": []
+    }
+  }
+}

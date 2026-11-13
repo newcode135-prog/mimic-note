@@ -1,0 +1,10 @@
+{
+  "_설명": "미믹노트 팀원 명부. role: owner(대표관리자·최종 권한) > admin(관리자) > member(팀원). github: 그 팀원의 GitHub 아이디 — 미션을 바꿀 때 gh 로그인 계정으로 본인·권한을 확인하는 기준(대표관리자만 고친다). 텔레그램 chat id 는 공개 저장소라 여기 두지 않고 비밀값(TELEGRAM_CHAT_IDS)에 둔다.",
+  "members": [
+    { "id": "changmin", "name": "창민", "role": "owner", "github": "darrenpual" },
+    { "id": "minho", "name": "민호", "role": "admin", "github": "newcode135-prog" },
+    { "id": "yuri", "name": "유리", "role": "admin", "github": "emileepark5281-cmd" },
+    { "id": "nathan", "name": "네이뜬", "role": "member", "github": null },
+    { "id": "lucas", "name": "루카스", "role": "member", "github": null }
+  ]
+}

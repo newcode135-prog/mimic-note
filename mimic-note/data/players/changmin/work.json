@@ -1,0 +1,110 @@
+{
+  "player": "changmin",
+  "items": [
+    {
+      "stage": "labeling",
+      "target": "대화-2026-11-13-1",
+      "status": "done",
+      "note": "[ ] 라벨 16개",
+      "updatedAt": "2026-11-12T23:12:52.629Z"
+    },
+    {
+      "stage": "compression",
+      "target": "대화-2026-11-13-1",
+      "status": "done",
+      "note": "결정 13개로 요약, 비밀 정보 제외",
+      "updatedAt": "2026-11-12T23:12:52.653Z"
+    },
+    {
+      "stage": "upload",
+      "target": "대화-2026-11-13-1",
+      "status": "done",
+      "note": "uploads/2026-11-13-대화-1.md",
+      "updatedAt": "2026-11-12T23:12:52.674Z"
+    },
+    {
+      "stage": "labeling",
+      "target": "대화-2026-11-13-2",
+      "status": "done",
+      "note": "",
+      "updatedAt": "2026-11-12T23:22:29.159Z"
+    },
+    {
+      "stage": "compression",
+      "target": "대화-2026-11-13-2",
+      "status": "done",
+      "note": "",
+      "updatedAt": "2026-11-12T23:22:29.181Z"
+    },
+    {
+      "stage": "upload",
+      "target": "대화-2026-11-13-2",
+      "status": "done",
+      "note": "",
+      "updatedAt": "2026-11-12T23:22:29.201Z"
+    },
+    {
+      "stage": "labeling",
+      "target": "대화-2026-11-13-3",
+      "status": "done",
+      "note": "",
+      "updatedAt": "2026-11-12T23:54:40.838Z"
+    },
+    {
+      "stage": "compression",
+      "target": "대화-2026-11-13-3",
+      "status": "done",
+      "note": "",
+      "updatedAt": "2026-11-12T23:54:40.860Z"
+    },
+    {
+      "stage": "upload",
+      "target": "대화-2026-11-13-3",
+      "status": "done",
+      "note": "",
+      "updatedAt": "2026-11-12T23:54:40.881Z"
+    },
+    {
+      "stage": "labeling",
+      "target": "대화-2026-11-13-4",
+      "status": "done",
+      "note": "",
+      "updatedAt": "2026-11-13T03:36:18.347Z"
+    },
+    {
+      "stage": "compression",
+      "target": "대화-2026-11-13-4",
+      "status": "done",
+      "note": "",
+      "updatedAt": "2026-11-13T03:36:18.386Z"
+    },
+    {
+      "stage": "upload",
+      "target": "대화-2026-11-13-4",
+      "status": "done",
+      "note": "",
+      "updatedAt": "2026-11-13T03:36:18.429Z"
+    },
+    {
+      "stage": "labeling",
+      "target": "대화-2026-11-13-5",
+      "status": "done",
+      "note": "[ ] 라벨 4개",
+      "updatedAt": "2026-11-13T03:49:12.812Z"
+    },
+    {
+      "stage": "compression",
+      "target": "대화-2026-11-13-5",
+      "status": "done",
+      "note": "결정 7개, 1242자",
+      "updatedAt": "2026-11-13T03:49:12.812Z"
+    },
+    {
+      "stage": "upload",
+      "target": "대화-2026-11-13-5",
+      "status": "done",
+      "note": "uploads/2026-11-13-대화-5.md",
+      "updatedAt": "2026-11-13T03:49:12.812Z"
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+# 미믹노트 알림: 미션 DB 가 main 에 반영되면, 미션이 바뀐 팀원에게만 그 사람의 최신 미션을 그 사람 텔레그램으로 보낸다.
+#   push       mimic-note/data/missions.json · members.json 이 main 에 반영되면 자동(push 한 계정의 권한도 확인)
+#   schedule   10분마다 보류된 알림(미연결·실패)만 다시 시도. 바뀐 것이 없으면 아무것도 보내지 않음.
+#              GitHub 의 예약 실행은 정확히 10분 간격이 보장되지 않는다(부하 시 늦어지거나 건너뜀).
+#              공개 저장소는 60일간 활동이 없으면 예약 실행이 자동으로 꺼진다.
+#              끄기: 저장소 변수 MIMIC_NOTE_SCHEDULE=off (비공개 전환 시 Actions 무료 시간을 아끼려면 끄거나 간격을 늘린다)
+#   workflow_dispatch  수동(체크인·재전송): gh workflow run mimic-checkin.yml -R newcode135-prog/mimic-note -f member=minho [-f force=true]
+# 비밀값(node mimic-note/telegram.mjs connect 가 등록): TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID_<아이디>
+# pull_request 로는 실행하지 않는다 — 외부(포크) PR 코드에 비밀값이 닿지 않게.
+# 주의: 저장소 비밀값은 쓰기 권한이 있는 모든 사람의 워크플로에서 읽힐 수 있고, push 의 코드가 그대로 실행된다.
+#       쓰기 권한 = 신뢰하는 사람만. 권한 확인(notify.mjs)은 실수·직접 수정을 잡는 감지 장치다.
+name: 미믹노트 알림
+on:
+  push:
+    branches: [main]
+    paths:
+      - mimic-note/data/missions.json
+      - mimic-note/data/members.json
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      member:
+        description: 팀원 아이디 또는 이름 (비우면 보류된 알림만)
+        required: false
+        default: ''
+      force:
+        description: 같은 내용을 이미 보냈어도 다시 보내기
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: mimic-note-notify
+  cancel-in-progress: false
+jobs:
+  notify:
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'schedule' || vars.MIMIC_NOTE_SCHEDULE != 'off')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: 발송 장부 불러오기
+        uses: actions/cache/restore@v6
+        with:
+          path: .mimic-note-ledger
+          key: mimic-note-ledger-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: mimic-note-ledger-
+      - name: 바뀐 팀원에게 텔레그램 발송
+        id: notify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          INPUT_MEMBER: ${{ inputs.member }}
+          INPUT_FORCE: ${{ inputs.force }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          TELEGRAM_CHAT_ID_CHANGMIN: ${{ secrets.TELEGRAM_CHAT_ID_CHANGMIN }}
+          TELEGRAM_CHAT_ID_MINHO: ${{ secrets.TELEGRAM_CHAT_ID_MINHO }}
+          TELEGRAM_CHAT_ID_YURI: ${{ secrets.TELEGRAM_CHAT_ID_YURI }}
+          TELEGRAM_CHAT_ID_NATHAN: ${{ secrets.TELEGRAM_CHAT_ID_NATHAN }}
+          TELEGRAM_CHAT_ID_LUCAS: ${{ secrets.TELEGRAM_CHAT_ID_LUCAS }}
+        run: node mimic-note/notify.mjs
+      - name: 발송 장부 저장
+        if: always() && steps.notify.outputs.ledger_changed == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .mimic-note-ledger
+          key: mimic-note-ledger-${{ github.run_id }}-${{ github.run_attempt }}

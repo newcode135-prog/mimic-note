@@ -1,0 +1,13 @@
+{
+  "name": "mimic-note",
+  "version": "0.1.0",
+  "private": true,
+  "description": "미믹 노트 — 팀원 미션·체크인·텔레그램 알림",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\""
+  }
+}

@@ -1,0 +1,172 @@
+{
+  "nextId": 16,
+  "missions": [
+    {
+      "id": "M-0001",
+      "assignee": "minho",
+      "order": 1,
+      "title": "텔레그램 봇 만들기",
+      "detail": "텔레그램에서 @BotFather 를 열고 /newbot 으로 봇을 만든 뒤 토큰을 받아요.\n토큰은 비밀번호와 같아요. 저장소·이슈·단체방에 절대 붙여넣지 마세요.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-12T19:54:03.100Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0002",
+      "assignee": "minho",
+      "order": 2,
+      "title": "봇에게 /start 보내기",
+      "detail": "방금 만든 봇을 열고 /start 를 눌러요. 봇은 먼저 말을 건 사람에게만 메시지를 보낼 수 있어요.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-12T19:54:03.119Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0003",
+      "assignee": "minho",
+      "order": 3,
+      "title": "토큰·chat id 전달하고 비밀값 등록",
+      "detail": "저장소 폴더의 .env 파일에 TELEGRAM_BOT_TOKEN=<토큰> 을 넣고 `node mimic-note/checkin.mjs --chat-ids` 로 본인 chat id 를 확인해요(.env 는 git 에 올라가지 않아요).\n토큰과 chat id 를 창민님(대표관리자)에게 개인적으로 전달하면, 창민님이 GitHub Settings → Secrets 에 TELEGRAM_BOT_TOKEN 과 TELEGRAM_CHAT_IDS 로 등록해요.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-12T19:54:03.139Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0004",
+      "assignee": "changmin",
+      "order": 1,
+      "title": "맥미니 켜기",
+      "detail": "맥미니가 8시간째 오프라인이에요(Tailscale). 켜고 Claude Code 에 알려 주면 패시브 스킬 [자동 다운로드]를 설치해요(bash mimic-note/passive/install-macmini.sh).",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-12T22:32:39.704Z",
+      "doneAt": null,
+      "priority": "low"
+    },
+    {
+      "id": "M-0005",
+      "assignee": "changmin",
+      "order": 2,
+      "title": "텔레그램 봇 연결",
+      "detail": "@BotFather → /newbot 으로 토큰 받기 → 받을 사람이 봇에게 /start → 맥미니 저장소 폴더의 .env 에 TELEGRAM_BOT_TOKEN 과 TELEGRAM_CHAT_IDS 넣기(chat id 는 node mimic-note/checkin.mjs --chat-ids 로 확인). 토큰은 저장소·채팅에 붙여넣지 않기.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-12T22:32:39.729Z",
+      "doneAt": null,
+      "priority": "low"
+    },
+    {
+      "id": "M-0006",
+      "assignee": "changmin",
+      "order": 3,
+      "title": "대전제 v0.2 검토",
+      "detail": "mimic-note/premise.md 13개 조항 확인. 특히 6조 보상 규칙, 새로 생긴 10~12조(자기 칸·패시브 스킬·두 개의 게임기).",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-12T22:32:39.750Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0007",
+      "assignee": "changmin",
+      "order": 4,
+      "title": "'데이터'가 무엇인지 정하기",
+      "detail": "[데이터 라벨링]·[압축]·[업로드]의 데이터가 무엇인지(예: 녹취 파일, 이미지, 시트) 예시 하나. 정해지면 규칙 v2 로 충돌 기준을 정확하게 만들어요.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-12T22:32:39.770Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0008",
+      "assignee": "changmin",
+      "order": 5,
+      "title": "플레이어 미션 등록",
+      "detail": "루카스·유리·네이뜬에게 줄 첫 미션 정하기. 내용만 Claude Code 에 말하면 등록돼요.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-12T22:32:39.790Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0009",
+      "assignee": "yuri",
+      "order": 1,
+      "title": "첫 접속(로그인) 확인",
+      "detail": "Claude Code 에 암호구 `유리 https://github.com/newcode135-prog/mimic` 를 보내 체크인해요. ① 대전제 v0.3 13개 조항을 먼저 읽어요. 유리님은 관리자(3순위)예요. 최종 결정은 창민님이 해요.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T03:05:05.813Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0010",
+      "assignee": "yuri",
+      "order": 2,
+      "title": "GitHub 아이디 알려 주고 쓰기 권한 받기",
+      "detail": "GitHub 아이디를 창민님에게 알려 주세요. 창민님이 mimic 저장소에 초대하면 메일에서 수락해요. 관리자는 미션을 등록하고 commit·push 해야 해서 쓰기 권한이 필요해요.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T03:05:05.852Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0011",
+      "assignee": "yuri",
+      "order": 3,
+      "title": "내 컴퓨터 준비",
+      "detail": "Claude Code 설치, Node 18 이상, git 확인 → 저장소 clone(암호구를 보내면 Claude Code 가 대신 해요). GitHub Actions 경로를 쓰려면 gh auth login 도 해요.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T03:05:05.891Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0012",
+      "assignee": "yuri",
+      "order": 4,
+      "title": "관리자 명령 익히기",
+      "detail": "node mimic-note/mission.mjs list 로 전체 미션을 보고, add 사용법(--by 유리)을 익혀요. 연습용 미션은 올리지 말고, 플레이어 첫 미션은 창민님과 나눈 뒤 등록해요(대전제 7조 겹침 방지).",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T03:05:05.935Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0013",
+      "assignee": "yuri",
+      "order": 5,
+      "title": "텔레그램 알림 받기",
+      "detail": "창민님이 봇을 연결하면(M-0005) 봇에게 /start 를 보내고, chat id 를 창민님에게 개인적으로 전달해요. chat id 는 저장소·단체방에 쓰지 않아요.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T03:05:05.978Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0014",
+      "assignee": "changmin",
+      "order": 6,
+      "title": "유리님 저장소 초대",
+      "detail": "유리님 GitHub 아이디를 받으면 mimic 저장소 Settings → Collaborators 에 Write 권한으로 초대하고, data/members.json 의 github 칸에 채워요.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T03:05:06.021Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0015",
+      "assignee": "changmin",
+      "order": 0,
+      "title": "[최우선] G-002 답하기: 대전제 13조 → [꿰] 10대전제",
+      "detail": "Claude 답은 먼저 공개됨(node mimic-note/game.mjs 창민). 창민님 답을 내고(answer), 판정 또는 패배 인정(concede)으로 끝내기. 이 결과가 대전제 v0.4 가 된다.",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T03:33:13.549Z",
+      "doneAt": null
+    }
+  ]
+}
