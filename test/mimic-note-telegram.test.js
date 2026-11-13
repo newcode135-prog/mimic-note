@@ -121,11 +121,16 @@ test('시나리오 9·10: 없는 팀원 거부, 관리자 아니면 설정·추�
   assert.equal(titles(db, 'nathan').length, 2);
 });
 
-test('parseMissionList: 1. / 2) / 3번 / - / 1️⃣ / 들여쓴 설명 / 번호 없는 줄', () => {
+test('parseMissionList: 1. / 2) / 3번 / - / 1️⃣ / 들여쓴 설명 / 번호 없는 글은 전체가 미션 하나', () => {
   assert.deepEqual(parseMissionList('1) A\n2번 B\n  B 설명\n- C\n1️⃣ D'), [
     { title: 'A', detail: '' }, { title: 'B', detail: 'B 설명' }, { title: 'C', detail: '' }, { title: 'D', detail: '' },
   ]);
-  assert.deepEqual(parseMissionList('민호 미션추가\n업무 X\n업무 Y').map((x) => x.title), ['업무 X', '업무 Y']);
+  assert.deepEqual(parseMissionList('민호 미션추가\n업무 X\n업무 Y').map((x) => x.title), ['업무 X 업무 Y'], '번호가 없으면 여러 줄이어도 한 미션');
+  // 실제로 있었던 일: 휴대폰에서 한 문장을 여러 줄로 보냈더니 미션 6개로 쪼개짐
+  assert.deepEqual(parseMissionList('미션 보내줘\n완료라고\n미션\n텔리그램에\n민호한테 답변해봐\n라는 미션줘 완료하면 나한테말해줘'),
+    [{ title: '미션 보내줘 완료라고 미션 텔리그램에 민호한테 답변해봐 라는 미션줘 완료하면 나한테말해줘', detail: '' }]);
+  const long = parseMissionList(`회의록 정리\n${'가'.repeat(150)}\n${'나'.repeat(60)}`);
+  assert.deepEqual(long, [{ title: '회의록 정리', detail: `${'가'.repeat(150)}\n${'나'.repeat(60)}` }], '이어 붙여 200자가 넘으면 첫 줄 = 제목, 나머지 = 설명');
   assert.deepEqual(parseMissionList('\n\n'), []);
   assert.throws(() => parseMissionList(`1. ${'가'.repeat(201)}`), /너무 깁니다/);
 });
@@ -572,7 +577,7 @@ test('Actions 2차 리뷰 회귀: 깨진 main 은 처음 시작 기준으로도 
 });
 
 test('2차 리뷰 회귀: 번호 없는 목록의 "미션설정" 머리줄도 버린다', () => {
-  assert.deepEqual(parseMissionList('미션설정\n로그인 UI\nAPI 테스트').map((x) => x.title), ['로그인 UI', 'API 테스트']);
+  assert.deepEqual(parseMissionList('미션설정\n로그인 UI\nAPI 테스트').map((x) => x.title), ['로그인 UI API 테스트']);
 });
 
 // ---------------- 텔레그램 API ----------------

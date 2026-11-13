@@ -95,7 +95,8 @@ test('봇 📨 미션 쓰기: 버튼을 누른 뒤 보낸 글은 그 사람에�
   const chatOwners = new Map([['1002', 'minho'], ['1004', 'nathan']]);
   const d = (id, text, compose) => decide({ chat: { id, type: 'private' }, text }, { members: M, chatOwners, compose });
   const give = d(1002, '이번 주 보고서\n결제 확인', { target: CHANGMIN });
-  assert.deepEqual([give.kind, give.action, give.target.id, give.items.map((x) => x.title)], ['act', 'add', 'changmin', ['이번 주 보고서', '결제 확인']]);
+  assert.deepEqual([give.kind, give.action, give.target.id, give.items.map((x) => x.title)], ['act', 'add', 'changmin', ['이번 주 보고서 결제 확인']], '번호 없는 여러 줄은 미션 하나');
+  assert.deepEqual(d(1002, '1. 이번 주 보고서\n2. 결제 확인', { target: CHANGMIN }).items.map((x) => x.title), ['이번 주 보고서', '결제 확인'], '번호를 붙이면 여러 개');
   const ask = d(1004, '1. 리뷰 부탁\n   PR 링크 확인', { target: MINHO });
   assert.deepEqual([ask.action, ask.items], ['request', [{ title: '리뷰 부탁', detail: 'PR 링크 확인' }]]);
   assert.equal(d(1004, '이거 해줘', { target: LUCAS }).kind, 'act-denied', '팀원끼리는 쓰기 중이어도 막힘');
