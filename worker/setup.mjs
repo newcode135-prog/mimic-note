@@ -3,6 +3,7 @@
 //
 //   node worker/setup.mjs                      설치·다시 배포(이미 된 것은 건너뜀)
 //   node worker/setup.mjs --new-github-token   워커의 GitHub 토큰을 새로 넣기
+//   node worker/setup.mjs --api-token          브라우저 로그인을 건너뛰고 클라우드플레어 API 토큰으로(로그인 창이 안 될 때)
 //
 // ① 클라우드플레어 로그인(없으면 브라우저가 열림) ② KV 만들기 ③ 배포 ④ 워커 비밀값(텔레그램 토큰·GitHub 토큰·연결 비밀)
 // ⑤ GitHub 비밀값 NOTE_RELAY_URL·NOTE_RELAY_SECRET ⑥ 이 컴퓨터의 기존 연결·링크·확인 상태 옮기기 ⑦ 텔레그램 웹훅 연결
@@ -52,7 +53,7 @@ async function main() {
 
   console.log('① 클라우드플레어 로그인 확인…');
   const loggedIn = () => /You are logged in/i.test(wrangler(['whoami'], { allowFail: true }));
-  if (!loggedIn()) {
+  if (!args.has('--api-token') && !loggedIn()) {
     console.log('   브라우저가 열리면 클라우드플레어에 로그인(무료 가입 가능)하고 [Allow]를 누르세요 — 이 PC 의 브라우저에서, 2분 안에.');
     wrangler(['login'], { interactive: true, allowFail: true });
   }
