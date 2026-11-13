@@ -1,5 +1,5 @@
 {
-  "nextId": 38,
+  "nextId": 39,
   "missions": [
     {
       "id": "M-0001",
@@ -432,6 +432,17 @@
       "createdAt": "2026-11-13T12:19:48.494Z",
       "doneAt": "2026-11-13T12:21:01.207Z",
       "doneBy": "yuri"
+    },
+    {
+      "id": "M-0038",
+      "assignee": "mino",
+      "order": 5,
+      "title": "미션 3개 만들어서 줘보ㅓ",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T15:31:20.355Z",
+      "doneAt": null
     }
   ]
 }
