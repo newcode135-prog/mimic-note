@@ -44,7 +44,8 @@ function listOf(member, db) {
 }
 
 // GitHub main 의 최신 미션 DB 에 apply 를 적용해 저장한다. 충돌(그사이 누가 바꿈)이면 최신본으로 다시(최대 3번).
-export async function mutate(github, apply, describe) {
+// as: 코어 오브 미믹노트 봇이 텔레그램 연결(일회용 코드)로 확인한 팀원 아이디 — 이때는 gh 계정은 저장만 하고, 권한은 그 팀원 역할로 본다.
+export async function mutate(github, apply, describe, { as = null, via = null } = {}) {
   const login = github.whoami();
   if (!github.access().push) {
     throw new Error(`GitHub 계정 ${login} 은 ${REPO} 쓰기 권한이 없어 미션을 바꿀 수 없습니다. 초대를 수락했는지 확인하거나, 권한 있는 계정으로 gh auth switch 하세요.`);
@@ -53,8 +54,8 @@ export async function mutate(github, apply, describe) {
     const members = JSON.parse(github.readFile(MEMBERS_FILE).text).members;
     const merr = validateMembers(members);
     if (merr.length) throw new Error(`팀원 명부(members.json)가 올바르지 않아 멈췄습니다: ${merr.join(' · ')}`);
-    const actor = memberByGithub(login, members);
-    if (!actor) throw new Error(`GitHub 계정 ${login} 이 팀원 명부(members.json 의 github)에 없습니다. 대표관리자에게 등록을 요청하세요.`);
+    const actor = as ? members.find((m) => m.id === as) || null : memberByGithub(login, members);
+    if (!actor) throw new Error(as ? `명부에 없는 팀원입니다: ${as}` : `GitHub 계정 ${login} 이 팀원 명부(members.json 의 github)에 없습니다. 대표관리자에게 등록을 요청하세요.`);
     const { text, sha } = github.readFile(DB_FILE);
     const db = JSON.parse(text);
     const before = validateDb(db, members);
@@ -63,7 +64,7 @@ export async function mutate(github, apply, describe) {
     if (!result.changed) return { unchanged: true, result, db, members, actor };
     const errs = validateDb(db, members);
     if (errs.length) throw new Error(`저장하지 않았습니다(검사 실패): ${errs.join(' · ')}`);
-    const w = github.writeFile(DB_FILE, `${JSON.stringify(db, null, 2)}\n`, sha, `미믹노트: ${describe(result, actor)} (by ${actor.name}·${login})`);
+    const w = github.writeFile(DB_FILE, `${JSON.stringify(db, null, 2)}\n`, sha, `미믹노트: ${describe(result, actor)} (by ${actor.name}·${via ? `${via}, ${login} 계정으로 저장` : login})`);
     if (w.conflict) continue;
     return { ...w, result, db, members, actor, attempt };
   }
