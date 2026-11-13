@@ -4,6 +4,8 @@
 //   node worker/setup.mjs                      설치·다시 배포(이미 된 것은 건너뜀)
 //   node worker/setup.mjs --new-github-token   워커의 GitHub 토큰을 새로 넣기
 //   node worker/setup.mjs --api-token          브라우저 로그인을 건너뛰고 클라우드플레어 API 토큰으로(로그인 창이 안 될 때)
+//   node worker/setup.mjs --clipboard          토큰을 붙여 넣는 대신 "복사하고 Enter"(클립보드에서 읽음 — 화면·파일에 안 남음)
+//   node worker/setup.mjs --token-file <파일>  메모장으로 저장한 파일에서(첫 줄 클라우드플레어 토큰, 둘째 줄 GitHub 토큰) — 읽은 뒤 바로 지움
 //
 // ① 클라우드플레어 로그인(없으면 브라우저가 열림) ② KV 만들기 ③ 배포 ④ 워커 비밀값(텔레그램 토큰·GitHub 토큰·연결 비밀)
 // ⑤ GitHub 비밀값 NOTE_RELAY_URL·NOTE_RELAY_SECRET ⑥ 이 컴퓨터의 기존 연결·링크·확인 상태 옮기기 ⑦ 텔레그램 웹훅 연결
@@ -43,8 +45,48 @@ function wrangler(args, { input, interactive = false, allowFail = false } = {}) 
 }
 const key = (n) => crypto.randomBytes(n).toString('base64url');
 
+// 클립보드에서 토큰 읽기(Windows: PowerShell Get-Clipboard, macOS: pbpaste). 붙여 넣기 때 붙는 숨은 글자·줄바꿈은 뺀다.
+async function fromClipboard(what) {
+  const rl = (await import('node:readline/promises')).createInterface({ input: process.stdin, output: process.stdout });
+  await rl.question(`   ${what}을(를) 메모장에서 복사(Ctrl+C)한 뒤 여기서 Enter… `);
+  rl.close();
+  const r = process.platform === 'win32'
+    ? spawnSync('powershell', ['-NoProfile', '-Command', 'Get-Clipboard -Raw'], { encoding: 'utf8' })
+    : spawnSync('pbpaste', [], { encoding: 'utf8' });
+  const v = String(r.stdout || '').replace(/\x1b\[[0-9;]*[~A-Za-z]/g, '').trim();
+  if (!v || /\s/.test(v)) throw new Error(`클립보드에서 ${what}을(를) 읽지 못했어요(비어 있거나 여러 단어). 토큰만 복사해 다시 실행하세요.`);
+  return v;
+}
+// whoami 결과의 끝 몇 줄(토큰은 안 나옴) — 왜 로그인이 안 됐는지 보여 주기
+const whoamiTail = () => wrangler(['whoami'], { allowFail: true }).trim().split('\n').filter((l) => l.trim() && !/DeprecationWarning|trace-deprecation/.test(l)).slice(-4).join('\n');
+
+// --token-file: 첫 줄 클라우드플레어 API 토큰, 둘째 줄 GitHub 토큰. 읽자마자 파일을 지운다(실패해도). 값은 출력하지 않는다.
+function readTokenFile(file) {
+  const text = fs.readFileSync(file, 'utf8');
+  // "CLOUDFLARE=\u2026"\u00B7"GITHUB=\u2026" \uC904(\uC124\uCE58 \uC548\uB0B4 \uD30C\uC77C \uD615\uC2DD), \uC5C6\uC73C\uBA74 # \uC774 \uC544\uB2CC \uCCAB \uB450 \uC904
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  const named = (k) => lines.find((l) => l.toUpperCase().startsWith(`${k}=`))?.slice(k.length + 1).trim();
+  const [cf, gh] = named('CLOUDFLARE') !== undefined || named('GITHUB') !== undefined ? [named('CLOUDFLARE'), named('GITHUB')] : lines;
+  if (!gh || /\s/.test(gh) || (cf && /\s/.test(cf))) throw new Error('토큰 파일 형식: GITHUB= 뒤에 GitHub 토큰(한 줄, 공백 없이). CLOUDFLARE= 는 비워 두면 브라우저 "허용"으로 로그인.');
+  return { cf: cf || null, gh };
+}
+
 async function main() {
-  const args = new Set(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const args = new Set(argv);
+  const tf = argv.indexOf('--token-file');
+  if (tf >= 0) {
+    const file = argv[tf + 1] || '';
+    const { cf, gh } = readTokenFile(file);
+    if (cf) { process.env.CLOUDFLARE_API_TOKEN = cf; args.add('--api-token'); } // 이번 실행에만(저장 안 함)
+    process.env.MIMIC_GITHUB_TOKEN = gh;
+    console.log('   토큰 파일을 읽었어요(설치가 끝나면 지웁니다).');
+    const wipe = () => { try { fs.rmSync(file, { force: true }); } catch { /* 아래 안내 */ } };
+    process.on('exit', (code) => {
+      if (code === 0) { wipe(); if (fs.existsSync(file)) console.log(`   ⚠️ 토큰 파일을 지우지 못했어요 — 직접 지우세요: ${file}`); else console.log('   토큰 파일을 지웠어요.'); }
+      else console.log(`   토큰 파일은 남겨 뒀어요(다시 실행하면 이어서 됩니다): ${file}`);
+    });
+  }
   let env = readEnv(ROOT, process.env);
   const token = env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('.env 에 TELEGRAM_BOT_TOKEN 이 없습니다. 먼저 node mimic-note/telegram.mjs connect 로 봇 토큰을 넣으세요.');
@@ -54,15 +96,15 @@ async function main() {
   console.log('① 클라우드플레어 로그인 확인…');
   const loggedIn = () => /You are logged in/i.test(wrangler(['whoami'], { allowFail: true }));
   if (!args.has('--api-token') && !loggedIn()) {
-    console.log('   브라우저가 열리면 클라우드플레어에 로그인(무료 가입 가능)하고 [Allow]를 누르세요 — 이 PC 의 브라우저에서, 2분 안에.');
+    console.log('   👉 크롬에 클라우드플레어 화면이 열리면, 맨 아래 파란 "허용(Allow)" 버튼을 누르세요 — 2분 안에.');
     wrangler(['login'], { interactive: true, allowFail: true });
   }
   if (!loggedIn()) {
     // 브라우저 로그인이 안 되면(시간 초과·다른 기기에서 열림 등) API 토큰으로 — 이번 실행에만 쓰고 저장하지 않는다
-    console.log('   브라우저 로그인이 끝나지 않았어요. 대신 클라우드플레어 API 토큰을 넣어도 됩니다:');
-    console.log('   https://dash.cloudflare.com/profile/api-tokens → Create Token → "Edit Cloudflare Workers" 템플릿 → 계정 선택 → Create');
-    process.env.CLOUDFLARE_API_TOKEN = await askHidden('   클라우드플레어 API 토큰(화면에 표시되지 않음): ');
-    if (!loggedIn()) throw new Error('클라우드플레어 API 토큰으로도 로그인하지 못했습니다. 토큰 권한(Edit Cloudflare Workers)과 계정을 확인하세요.');
+    console.log('   클라우드플레어 API 토큰으로 로그인합니다(만들기: https://dash.cloudflare.com/profile/api-tokens → Create Token → "Edit Cloudflare Workers" 템플릿 → 계정 선택 → Create)');
+    process.env.CLOUDFLARE_API_TOKEN = args.has('--clipboard') ? await fromClipboard('클라우드플레어 API 토큰')
+      : (await askHidden('   클라우드플레어 API 토큰(화면에 표시되지 않음): ')).replace(/\x1b\[[0-9;]*[~A-Za-z]/g, '').trim();
+    if (!loggedIn()) throw new Error(`클라우드플레어 API 토큰으로도 로그인하지 못했습니다. 토큰 권한(Edit Cloudflare Workers)과 계정을 확인하세요.\n${whoamiTail()}`);
   }
   console.log('   로그인됨');
 
@@ -96,7 +138,7 @@ async function main() {
   wrangler(['secret', 'put', 'IMPORT_SECRET'], { input: env.NOTE_IMPORT_SECRET });
   if (!have.has('GITHUB_TOKEN') || args.has('--new-github-token')) {
     console.log('   GitHub 토큰이 필요합니다(맨 위 주석의 권한으로 만든 fine-grained 토큰, 화면에 표시되지 않음).');
-    const ghToken = process.env.MIMIC_GITHUB_TOKEN || await askHidden('   GitHub 토큰: ');
+    const ghToken = process.env.MIMIC_GITHUB_TOKEN || (args.has('--clipboard') ? await fromClipboard('GitHub 토큰') : (await askHidden('   GitHub 토큰: ')).replace(/\x1b\[[0-9;]*[~A-Za-z]/g, '').trim());
     const h = { authorization: `Bearer ${ghToken}`, 'user-agent': 'mimic-note-setup', accept: 'application/vnd.github+json' };
     const check = await fetch(`https://api.github.com/repos/${REPO}/contents/mimic-note/data/members.json`, { headers: h });
     if (!check.ok) throw new Error(`GitHub 토큰으로 ${REPO} 를 읽지 못했습니다(${check.status}). 저장소 선택·권한을 확인하세요.`);

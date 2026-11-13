@@ -9,4 +9,4 @@ REPO = "newcode135-prog/mimic-note"
 # setup.mjs 가 처음 실행할 때 KV 를 만들고 id 를 채운다(비밀값 아님)
 [[kv_namespaces]]
 binding = "NOTE"
-id = "REPLACE_WITH_KV_ID"
+id = "20f3c712bd8c4bcb9e335ad6b818dbe8"
