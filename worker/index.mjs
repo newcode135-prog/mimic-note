@@ -179,13 +179,16 @@ export function workerCtx(env) {
       const code = u.message.text.trim().match(/^\/start(?:@\w+)?\s+(\S+)$/)?.[1];
       const raw = code && /^[A-Za-z0-9_-]{16}$/.test(code) ? await env.NOTE.get(`code:${code}`) : null;
       if (!raw) return { key: 'linkExpired' };
-      await env.NOTE.delete(`code:${code}`); // 먼저 지운다 — 같은 코드를 거의 동시에 쓴 다른 대화가 함께 연결되지 않게
       const c = JSON.parse(raw);
+      // 여기까지 오류가 나면(GitHub 잠깐 장애 등) 코드는 그대로 — 같은 링크로 [시작]을 다시 누르면 된다
       const { members, db } = await verifiedState();
       const member = members.find((m) => m.id === c.member);
       if (!member) return { text: '명부에 없는 팀원의 링크예요. 관리자에게 문의하세요.' };
       const by = members.find((m) => m.id === c.by);
       if ((await chatOf(env, member.id)) && by?.role !== 'owner') return { text: `${member.name}님은 이미 연결돼 있어요. 다시 연결하려면 대표관리자에게 새 링크를 요청하세요.` };
+      // 연결이 확정되는 순간에만 코드를 쓴다. 같은 코드를 거의 동시에 두 대화가 써도 팀원→chat 은 하나뿐이라
+      // 마지막 대화만 연결된다(ownerOf 의 양방향 확인).
+      await env.NOTE.delete(`code:${code}`);
       const evicted = await linkChat(env, replyTo, member.id);
       if (evicted) await tg('sendMessage', { chat_id: evicted, text: `이 대화의 미믹노트 연결(${esc(member.name)})이 해제됐어요 — 다른 텔레그램 대화로 다시 연결됐습니다. 본인이 한 게 아니면 대표관리자에게 알려 주세요.`, parse_mode: 'HTML' }).catch(() => {});
       await tg('sendMessage', { chat_id: replyTo, text: esc(tr(lang).linked(dn(member, lang))), parse_mode: 'HTML' });
