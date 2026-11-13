@@ -314,10 +314,11 @@
       "order": 1,
       "title": "텔레그램 연결 — 민호님께 받은 본인 링크를 눌러 [시작]",
       "detail": "",
-      "status": "todo",
+      "status": "done",
       "createdBy": "minho",
       "createdAt": "2026-11-13T09:37:53.310Z",
-      "doneAt": null
+      "doneAt": "2026-11-13T15:32:17.853Z",
+      "doneBy": "mino"
     },
     {
       "id": "M-0028",
