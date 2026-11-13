@@ -1,5 +1,5 @@
 {
-  "nextId": 33,
+  "nextId": 37,
   "missions": [
     {
       "id": "M-0001",
@@ -370,6 +370,50 @@
       "status": "todo",
       "createdBy": "minho",
       "createdAt": "2026-11-13T10:17:01.812Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0033",
+      "assignee": "yuri",
+      "order": 8,
+      "title": "미션",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T10:18:31.286Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0034",
+      "assignee": "yuri",
+      "order": 9,
+      "title": "텔리그램에",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T10:18:31.286Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0035",
+      "assignee": "yuri",
+      "order": 10,
+      "title": "민호한테 답변해봐",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T10:18:31.286Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0036",
+      "assignee": "yuri",
+      "order": 11,
+      "title": "라는 미션줘 완료하면 나한테말해줘",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T10:18:31.286Z",
       "doneAt": null
     }
   ]
