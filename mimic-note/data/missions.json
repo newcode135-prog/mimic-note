@@ -1,5 +1,5 @@
 {
-  "nextId": 16,
+  "nextId": 19,
   "missions": [
     {
       "id": "M-0001",
@@ -7,10 +7,12 @@
       "order": 1,
       "title": "텔레그램 봇 만들기",
       "detail": "텔레그램에서 @BotFather 를 열고 /newbot 으로 봇을 만든 뒤 토큰을 받아요.\n토큰은 비밀번호와 같아요. 저장소·이슈·단체방에 절대 붙여넣지 마세요.",
-      "status": "todo",
+      "status": "replaced",
       "createdBy": "changmin",
       "createdAt": "2026-11-12T19:54:03.100Z",
-      "doneAt": null
+      "doneAt": null,
+      "replacedAt": "2026-11-13T05:52:07.980Z",
+      "replacedBy": "minho"
     },
     {
       "id": "M-0002",
@@ -18,10 +20,12 @@
       "order": 2,
       "title": "봇에게 /start 보내기",
       "detail": "방금 만든 봇을 열고 /start 를 눌러요. 봇은 먼저 말을 건 사람에게만 메시지를 보낼 수 있어요.",
-      "status": "todo",
+      "status": "replaced",
       "createdBy": "changmin",
       "createdAt": "2026-11-12T19:54:03.119Z",
-      "doneAt": null
+      "doneAt": null,
+      "replacedAt": "2026-11-13T05:52:07.980Z",
+      "replacedBy": "minho"
     },
     {
       "id": "M-0003",
@@ -29,10 +33,12 @@
       "order": 3,
       "title": "토큰·chat id 전달하고 비밀값 등록",
       "detail": "저장소 폴더의 .env 파일에 TELEGRAM_BOT_TOKEN=<토큰> 을 넣고 `node mimic-note/checkin.mjs --chat-ids` 로 본인 chat id 를 확인해요(.env 는 git 에 올라가지 않아요).\n토큰과 chat id 를 창민님(대표관리자)에게 개인적으로 전달하면, 창민님이 GitHub Settings → Secrets 에 TELEGRAM_BOT_TOKEN 과 TELEGRAM_CHAT_IDS 로 등록해요.",
-      "status": "todo",
+      "status": "replaced",
       "createdBy": "changmin",
       "createdAt": "2026-11-12T19:54:03.139Z",
-      "doneAt": null
+      "doneAt": null,
+      "replacedAt": "2026-11-13T05:52:07.980Z",
+      "replacedBy": "minho"
     },
     {
       "id": "M-0004",
@@ -166,6 +172,39 @@
       "status": "todo",
       "createdBy": "changmin",
       "createdAt": "2026-11-13T03:33:13.549Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0016",
+      "assignee": "minho",
+      "order": 1,
+      "title": "로그인 UI 개발",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T05:52:07.980Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0017",
+      "assignee": "minho",
+      "order": 2,
+      "title": "파일 다운로드 API 테스트",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T05:52:07.980Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0018",
+      "assignee": "minho",
+      "order": 3,
+      "title": "모바일 화면 검수",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T05:52:07.980Z",
       "doneAt": null
     }
   ]
