@@ -203,14 +203,19 @@ export async function runNotify({ env, git, gh, send, relay = null, ledger, now 
 
   // 3) 발송 — 팀원 아이디로 보낸다(워커를 거치거나, 직접이면 chat id 를 찾아 응답까지 확인)
   const token = env.TELEGRAM_BOT_TOKEN;
-  const deliver = relay || (async (memberId, text, extra = {}) => {
+  const direct = async (memberId, text, extra = {}) => {
     if (!token) return { status: 'unconfigured' };
     const chatId = chatIdFor(memberId, env);
     if (!chatId) return { status: 'unconnected' };
     const r = await send(token, chatId, text, extra);
     if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
     return { status: 'sent', messageId: r.message_id };
-  });
+  };
+  // 봇 서버(워커)가 모르는 사람(다른 컴퓨터에서 연결)은 예전처럼 직접 — 알림이 끊기지 않게
+  const deliver = relay ? async (memberId, text, extra = {}) => {
+    const r = await relay(memberId, text, extra);
+    return r.status === 'unconnected' && token && chatIdFor(memberId, env) ? direct(memberId, text, extra) : r;
+  } : direct;
   if (!halted && !curBad.length) {
     for (const id of candidates) {
       const member = cur.members.find((m) => m.id === id);
@@ -387,8 +392,8 @@ async function main() {
     return j;
   };
   // 워커가 텔레그램 실패를 { status:'failed', error, code } 로 알려 주면 직접 보낼 때와 같은 오류로 바꾼다
-  const relay = relayUrl ? async (member, text) => {
-    const j = await relayCall('/relay/send', { member, text });
+  const relay = relayUrl ? async (member, text, extra = {}) => {
+    const j = await relayCall('/relay/send', { member, text, ...(extra.reply_markup ? { reply_markup: extra.reply_markup } : {}) });
     if (j.status === 'failed') throw Object.assign(new Error(j.error || '텔레그램 발송 실패'), { code: j.code ?? null });
     return { status: j.status, messageId: j.messageId };
   } : null;

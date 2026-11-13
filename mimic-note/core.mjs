@@ -764,6 +764,10 @@ export function resolveRefs(db, memberId, refs) {
   });
 }
 
+// 커밋의 바뀐 파일 목록(commits API files)에 미션 데이터가 있는지. 목록이 없거나 300개 이상(잘림)이면 있다고 본다(모르면 믿지 않음).
+export const changesData = (files) => !Array.isArray(files) || files.length >= 300
+  || files.some((f) => [DB_FILE, MEMBERS_FILE].includes(f.filename) || [DB_FILE, MEMBERS_FILE].includes(f.previous_filename));
+
 // 봇이 head 위에 저장(또는 head 를 보여 줌)해도 되는지: head 가 Actions 가 확인한 커밋이거나, 확인된 커밋에서 head 까지의
 // main 첫 부모 사슬이 ① 봇이 직접 만든 커밋(trusted: Map 커밋 → 부모) ② 미션 데이터를 안 바꾼 커밋(코드·문서)으로만 이어질 때.
 // 내용이 아니라 커밋으로 판단한다 — 확인 전의 변경을 누가 되돌려(revert) 예전과 같은 내용이 돼도, 그 push 는 데이터를 바꾼
@@ -772,13 +776,14 @@ export async function safeHead(github, head, verified, trusted = null) {
   if (head === verified) return true;
   const chain = await github.chain(verified, head);
   if (!chain) return false;
-  for (const c of chain) if (!trusted?.has(c) && await github.touchesData(c)) return false;
+  for (const c of chain) if (!(await trusted?.has(c)) && await github.touchesData(c)) return false; // has 는 Map 이든 비동기(KV)든
   return true;
 }
 
 // GitHub main 의 최신 미션 DB 에 apply 를 적용해 저장한다. 충돌(그사이 누가 바꿈)이면 최신본으로 다시(최대 3번).
 // as: 코어 오브 미믹노트 봇이 텔레그램 연결(일회용 코드)로 확인한 팀원 아이디 — 이때는 gh 계정은 저장만 하고, 권한은 그 팀원 역할로 본다.
 // trusted: 봇이 직접 만든 커밋(Map 커밋 → 부모) — 그 커밋들은 Actions 확인 전이라도 이어서 저장한다(safeHead).
+//   함수(async () => Map)면 시도마다 다시 읽는다 — 워커처럼 여러 요청이 동시에 저장할 때 다른 요청의 봇 커밋도 보이게.
 export async function mutate(github, apply, describe, { as = null, via = null, trusted = null } = {}) {
   const login = await github.whoami();
   const access = await github.access();
@@ -801,7 +806,7 @@ export async function mutate(github, apply, describe, { as = null, via = null, t
       const v = await github.verifiedSha();
       if (!v) throw new Error('GitHub Actions 의 확인 상태를 알 수 없어 저장을 멈췄어요. 잠시 뒤 다시 해 주세요.');
       // 커밋 사슬을 볼 수 있는 어댑터(gh)는 safeHead, 못 보는 어댑터(워커)는 예전처럼 "확인된 상태와 같은 내용"
-      const ok = github.chain ? await safeHead(github, head, v, trusted)
+      const ok = github.chain ? await safeHead(github, head, v, typeof trusted === 'function' ? await trusted() : trusted)
         : (await github.readFile(MEMBERS_FILE, v)).sha === mf.sha && (await github.readFile(DB_FILE, v)).sha === sha;
       if (!ok) throw new Error('main 에 아직 확인되지 않은 변경이 있어 저장을 멈췄어요(다른 곳에서 방금 저장한 내용을 처리 중이거나 관리자 확인이 필요). 1분쯤 뒤 다시 해 주세요.');
     }

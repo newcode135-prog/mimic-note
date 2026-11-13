@@ -6,9 +6,9 @@
 //   우리는 최신본을 다시 읽어 같은 작업을 다시 적용한다. 강제로 덮어쓰지 않는다.
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { NOTE_DIR, REPO, DB_FILE, MEMBERS_FILE } from './lib.mjs';
+import { NOTE_DIR, REPO, DB_FILE, MEMBERS_FILE, changesData } from './lib.mjs';
 
-export { DB_FILE, MEMBERS_FILE };
+export { DB_FILE, MEMBERS_FILE, changesData };
 
 export const WORKFLOW = 'mimic-checkin.yml';
 const ROOT = path.resolve(NOTE_DIR, '..');
@@ -25,9 +25,6 @@ function gh(args, input) {
 const api = (p) => JSON.parse(gh(['api', p]) || 'null');
 
 // `gh run view --log` 의 한 줄은 "<작업>\t<단계>\t<시각> <내용>". 내용 전체가 "MIMIC_VERIFIED <sha>" 인 줄만(notify.mjs 가 찍은 줄).
-// 커밋의 바뀐 파일 목록(commits API files)에 미션 데이터가 있는지. 목록이 없거나 300개 이상(잘림)이면 있다고 본다.
-export const changesData = (files) => !Array.isArray(files) || files.length >= 300
-  || files.some((f) => [DB_FILE, MEMBERS_FILE].includes(f.filename) || [DB_FILE, MEMBERS_FILE].includes(f.previous_filename));
 
 export const parseVerified = (log) => String(log).match(/^[^\t\n]*\t[^\t\n]*\t\S+ MIMIC_VERIFIED ([0-9a-f]{40})\r?$/m)?.[1] || null;
 
@@ -182,7 +179,7 @@ export async function waitForNotify(github, { commit, afterRunId = 0, actor, tim
 const LABEL = {
   sent: '✅ 발송 성공(텔레그램이 받았다고 응답)',
   'already-sent': '같은 내용을 이미 보냈음 — 중복 발송 안 함',
-  unconnected: '⚠️ 텔레그램 미연결(node mimic-note/telegram.mjs connect)',
+  unconnected: '⚠️ 텔레그램 미연결(관리자가 봇에 "<이름> 연결링크" — 봇 서버가 없으면 node mimic-note/telegram.mjs connect)',
   unconfigured: '⚠️ 봇 토큰 미설정(GitHub 비밀값 TELEGRAM_BOT_TOKEN 없음)',
   failed: '❌ 발송 실패',
   alert: '⚠️ 대표관리자에게 경고 발송',

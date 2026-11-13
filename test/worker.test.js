@@ -1,4 +1,5 @@
-// 코어 오브 미믹노트 봇 서버(클라우드플레어 워커)를 Node 에서 가짜 KV·GitHub(Git Data API 포함)·텔레그램으로 시험한다.
+// 코어 오브 미믹노트 봇 서버(클라우드플레어 워커)를 Node 에서 가짜 KV·GitHub(Git Data·compare·commits API)·텔레그램으로 시험한다.
+// 워커는 PC 봇과 같은 app.mjs 를 쓰므로 미션 앱 기능(버튼·요청·수락·언어)이 똑같이 동작해야 한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -55,12 +56,28 @@ function world({ onPatch } = {}) {
     gh.push({ method, path: u.pathname + u.search, body });
     const p = u.pathname.replace(`/repos/${REPO}`, '');
     if (u.pathname === '/user') return reply({ login: 'newcode135-prog' });
-    if (p === '' ) return reply({ permissions: { push: true, admin: true } });
+    if (p === '') return reply({ permissions: { push: true, admin: true } });
     if (p === '/git/ref/heads/main') return reply({ object: { sha: state.head } });
     const cm = p.match(/^\/contents\/(.+)$/);
     if (cm && method === 'GET') {
       const t = filesAt(u.searchParams.get('ref'))?.[cm[1]];
-      return t == null ? reply({ message: 'Not Found' }, 404) : reply({ content: Buffer.from(t).toString('base64'), sha: sha1(t) });
+      if (t == null) return reply({ message: 'Not Found' }, 404);
+      if (/raw/.test(init.headers?.accept || '')) return new Response(t, { status: 200 }); // 원문(raw) 요청
+      return reply({ content: Buffer.from(t).toString('base64'), sha: sha1(t) });
+    }
+    const cmp = p.match(/^\/compare\/([0-9a-f]+)\.\.\.([0-9a-f]+)$/);
+    if (cmp) { // head 에서 부모를 따라 base 까지(일직선)
+      const [, base, h] = cmp;
+      const list = [];
+      for (let c = h; c && c !== base; c = commits.get(c)?.parent) list.unshift({ sha: c, parents: [{ sha: commits.get(c)?.parent }] });
+      const reached = base === h || list.length && commits.get(list[0].sha)?.parent === base;
+      return reply({ status: base === h ? 'identical' : reached ? 'ahead' : 'diverged', commits: reached ? list : [] });
+    }
+    const one = p.match(/^\/commits\/([0-9a-f]+)$/);
+    if (one) { // 첫 부모와 비교해 바뀐 파일
+      const c = commits.get(one[1]);
+      const prev = commits.get(c.parent)?.files || {};
+      return reply({ files: Object.keys({ ...prev, ...c.files }).filter((f) => prev[f] !== c.files[f]).map((filename) => ({ filename })) });
     }
     if (p === '/git/blobs') { const s = sha1(`blob${body.content}`); state.blobs.set(s, Buffer.from(body.content, 'base64').toString('utf8')); return reply({ sha: s }, 201); }
     const gc = p.match(/^\/git\/commits\/([0-9a-f]+)$/);
@@ -85,7 +102,12 @@ function world({ onPatch } = {}) {
     return reply({ message: `unexpected ${method} ${p}` }, 500);
   };
   const env = {
-    NOTE: { get: async (k) => (kv.has(k) ? kv.get(k) : null), put: async (k, v) => { kv.set(k, String(v)); }, delete: async (k) => { kv.delete(k); } },
+    NOTE: {
+      get: async (k) => (kv.has(k) ? kv.get(k) : null),
+      put: async (k, v) => { kv.set(k, String(v)); },
+      delete: async (k) => { kv.delete(k); },
+      list: async ({ prefix }) => ({ keys: [...kv.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })) }),
+    },
     TELEGRAM_BOT_TOKEN: 'tg-token', GITHUB_TOKEN: 'gh-token', RELAY_SECRET: S.RELAY, WEBHOOK_SECRET: S.HOOK, IMPORT_SECRET: S.IMPORT, REPO, fetch: fetchFn,
   };
   const post = async (pathName, body, headers = {}, e = env) => {
@@ -99,12 +121,17 @@ function world({ onPatch } = {}) {
   const importer = (body) => post('/relay/import', body, { authorization: `Bearer ${S.IMPORT}` });
   let uid = 0;
   const msg = (chat, text) => hook({ update_id: ++uid, message: { chat: { id: chat, type: 'private' }, from: { id: chat }, text } });
-  const tap = (chat, data, from = chat) => hook({ update_id: ++uid, callback_query: { id: `cb${uid}`, from: { id: from }, message: { chat: { id: chat }, message_id: 50 + uid }, data } });
-  const lastText = () => tg.filter((c) => c.method === 'sendMessage' || c.method === 'editMessageText').at(-1)?.body.text;
+  const tap = (chat, data, from = chat, markup = undefined) => hook({ update_id: ++uid, callback_query: { id: `cb${uid}`, from: { id: from }, message: { chat: { id: chat, type: 'private' }, message_id: 50 + uid, reply_markup: markup }, data } });
+  const sends = () => tg.filter((c) => c.method === 'sendMessage' || c.method === 'editMessageText');
+  const lastText = () => sends().at(-1)?.body.text;
+  const lastMarkup = () => sends().at(-1)?.body.reply_markup;
   const askData = () => tg.filter((c) => c.method === 'sendMessage').at(-1).body.reply_markup.inline_keyboard[0][0].callback_data;
+  const toast = () => tg.filter((c) => c.method === 'answerCallbackQuery').at(-1)?.body.text;
   const dbAtHead = () => JSON.parse(commits.get(state.head).files[DB_FILE]);
-  return { root, commits, state, pushMain, kv, tg, gh, env, post, hook, relay, importer, msg, tap, lastText, askData, dbAtHead };
+  const verify = () => relay('/relay/verified', { sha: state.head }); // Actions 가 지금 main 을 확인했다고 알림
+  return { root, commits, state, pushMain, kv, tg, gh, env, post, hook, relay, importer, msg, tap, lastText, lastMarkup, askData, toast, dbAtHead, verify };
 }
+const datas = (m) => (m?.inline_keyboard || []).flat().map((b) => b.callback_data);
 
 test('워커 인증: 틀린·없는·짧은 비밀값은 모두 거절(fail closed), 중계 비밀로 import 불가', async () => {
   const w = world();
@@ -121,7 +148,7 @@ test('워커 인증: 틀린·없는·짧은 비밀값은 모두 거절(fail clos
   assert.equal(await health.text(), 'ok');
 });
 
-test('워커 중계·import: 미연결은 unconnected, import 는 이미 연결된 사람을 덮어쓰지 않음, 긴 메시지도 텔레그램에 맡김', async () => {
+test('워커 중계·import: 미연결은 unconnected, import 는 이미 연결된 사람을 덮어쓰지 않음, ✅ 버튼은 미션 앱 버튼만', async () => {
   const w = world();
   assert.deepEqual(await (await w.relay('/relay/send', { member: 'minho', text: '안녕' })).json(), { status: 'unconnected' });
   await w.importer({ owners: { 1002: 'minho' }, codes: [], verified: w.root });
@@ -133,29 +160,40 @@ test('워커 중계·import: 미연결은 unconnected, import 는 이미 연결�
   assert.equal(w.kv.has('chat:7777'), false);
   const long = 'ㄱ'.repeat(4500); // 태그를 빼면 4096 이하일 수 있으니 길이 판단은 텔레그램에 맡김
   assert.equal((await (await w.relay('/relay/send', { member: 'minho', text: long })).json()).status, 'sent');
+  // Actions 목록 메시지의 ✅·🔄 버튼은 그대로 붙여 보내고, 다른 버튼(링크·수락 등)은 거절
+  const kb = { inline_keyboard: [[{ text: '✅ 1', callback_data: 'c:M-0001' }], [{ text: '🔄 새로고침', callback_data: 'v:minho' }]] };
+  assert.equal((await (await w.relay('/relay/send', { member: 'minho', text: '목록', reply_markup: kb })).json()).status, 'sent');
+  assert.deepEqual(w.tg.at(-1).body.reply_markup, kb);
+  for (const bad of [{ inline_keyboard: [[{ text: 'x', url: 'https://evil.example' }]] }, { inline_keyboard: [[{ text: 'x', callback_data: 'a:M-0001' }]] }, { keyboard: [] }]) {
+    assert.equal((await (await w.relay('/relay/send', { member: 'minho', text: 'x', reply_markup: bad })).json()).status, 'failed');
+  }
   assert.equal((await w.relay('/relay/verified', { sha: 'not-a-sha' })).status, 400);
   await w.relay('/relay/verified', { sha: 'b'.repeat(40) });
   assert.equal(w.kv.get('verified'), 'b'.repeat(40));
   assert.equal((await (await w.relay('/relay/send', { member: '../x', text: 'x' })).json()).status, 'failed');
 });
 
-test('워커 연결: 일회용 코드로만, 한 번 쓰면 사라짐, 연결되면 지금 미션을 바로 보냄(Actions 를 부르지 않음)', async () => {
+test('워커 연결: 일회용 코드로만, 한 번 쓰면 사라짐, 연결되면 지금 미션·메뉴·언어 고르기를 보냄(Actions 를 부르지 않음)', async () => {
   const w = world();
   await w.importer({ owners: {}, codes: [{ code: 'ABCDEFGHijklmn12', member: 'lucas', ttl: 3600 }], verified: w.root });
   await w.msg(5005, '/start');
   assert.match(w.lastText(), /본인 연결 링크/);
   await w.msg(5005, '/start wrongcode1234567');
-  assert.match(w.lastText(), /올바르지 않거나 만료/);
+  assert.match(w.lastText(), /만료된 연결 링크/);
   await w.msg(5005, '/start ABCDEFGHijklmn12');
-  const sent = w.tg.filter((c) => c.method === 'sendMessage').slice(-2).map((c) => c.body.text);
+  const sent = w.tg.filter((c) => c.method === 'sendMessage').slice(-4).map((c) => c.body.text);
   assert.match(sent[0], /연결 완료 — 루카스님/);
   assert.match(sent[1], /루카스님의 미션/);
+  assert.match(sent[2], /루카스님, 이렇게 써요/);
+  assert.match(sent[3], /Choose your language/);
   assert.equal(w.kv.get('chat:5005'), 'lucas');
   assert.equal(w.kv.get('member:lucas'), '5005');
   assert.equal(w.kv.has('code:ABCDEFGHijklmn12'), false);
   assert.ok(!w.gh.some((c) => c.path.endsWith('/dispatches')), '저장소 주인 토큰으로 Actions 를 부르지 않음');
   await w.msg(6006, '/start ABCDEFGHijklmn12');
-  assert.match(w.lastText(), /올바르지 않거나 만료/, '쓴 코드는 다시 못 씀');
+  assert.match(w.lastText(), /만료된 연결 링크/, '쓴 코드는 다시 못 씀');
+  await w.msg(5005, '/start ABCDEFGHijklmn12');
+  assert.match(w.lastText(), /이미 <b>루카스<\/b>님으로 연결돼 있어요/, '연결된 대화에서 링크를 다시 누르면 안내만');
 });
 
 test('워커 연결 보안: 이미 연결된 사람의 재연결 링크는 대표관리자만, 재연결되면 예전 대화에 알림, 동시에 연결해도 둘 다 저장', async () => {
@@ -175,14 +213,19 @@ test('워커 연결 보안: 이미 연결된 사람의 재연결 링크는 대�
   assert.ok(w.tg.some((c) => c.method === 'sendMessage' && c.body.chat_id === '1003' && /연결\(유리\)이 해제됐어요/.test(c.body.text)), '예전 대화에 알림');
 });
 
-test('워커 버튼: 본인 버튼은 확인된 상태의 미션, 남의 버튼은 그 사람 목록(버튼 없이), 단체방은 무시, 확인 상태 없으면 정직하게 답함', async () => {
+test('워커 이름봇: 본인은 ✅ 버튼, 남은 주기/요청 버튼, 팀 현황(연결 여부), 단체방은 무시, 확인 상태 없으면 정직하게 답함', async () => {
   const w = world();
   await w.importer({ owners: { 1002: 'minho', 1004: 'nathan' }, codes: [], verified: w.root });
   await w.msg(1002, '민호봇');
-  assert.match(w.lastText(), /민호님의 미션[\s\S]*1️⃣ 로그인 UI 개발/);
+  assert.match(w.lastText(), /민호님의 미션[\s\S]*1️⃣ 로그인 UI 개발[\s\S]*✅ 번호/);
+  assert.deepEqual(datas(w.lastMarkup()), ['c:M-0001', 'c:M-0002', 'v:minho']);
   await w.msg(1002, '창민봇');
-  assert.match(w.lastText(), /창민님의 미션/);
-  assert.ok(!/아래|버튼/.test(w.lastText()), '워커는 버튼을 붙이지 않으니 버튼 안내도 없음');
+  assert.match(w.lastText(), /창민님에게 미션을 줄 수 있어요/);
+  assert.deepEqual(datas(w.lastMarkup()), ['s:changmin', 'v:changmin']);
+  await w.msg(1004, '민호봇');
+  assert.match(w.lastText(), /민호님에게 미션을 요청할 수 있어요/);
+  await w.msg(1004, '📋 팀 현황');
+  assert.match(w.lastText(), /<b>민호<\/b> — 남은 2 · 완료 0\n[\s\S]*<b>루카스<\/b> — 남은 0 · 완료 0 · <i>텔레그램 미연결<\/i>/);
   const before = w.tg.length;
   await w.hook({ update_id: 999, message: { chat: { id: -100, type: 'group' }, from: { id: 1002 }, text: '민호봇' } });
   assert.equal(w.tg.length, before);
@@ -191,7 +234,7 @@ test('워커 버튼: 본인 버튼은 확인된 상태의 미션, 남의 버튼�
   assert.match(w.lastText(), /확인 상태를 아직 받지 못했어요/);
 });
 
-test('워커 미션 주기: 확인 버튼 뒤 확인한 커밋 위에만 저장(준 사람 기록), 두 번 누르면 이미 처리, 남의 버튼·팀원은 거절', async () => {
+test('워커 미션 주기: 확인 버튼 뒤 확인한 커밋 위에만 저장(준 사람 기록), 두 번 누르면 이미 처리, 다른 대화의 버튼은 무시', async () => {
   const w = world();
   await w.importer({ owners: { 1002: 'minho', 1004: 'nathan' }, codes: [], verified: w.root });
   await w.msg(1002, '창민 이거 결제해줘');
@@ -204,9 +247,7 @@ test('워커 미션 주기: 확인 버튼 뒤 확인한 커밋 위에만 저장(
   assert.match(w.commits.get(w.state.head).message, /\(by 민호·텔레그램, newcode135-prog 계정으로 저장\)$/);
   assert.match(w.lastText(), /✅ 창민님에게 미션을 줬어요\n• \[M-0003\] 이거 결제해줘/);
   await w.tap(1002, data);
-  assert.match(w.tg.at(-1).body.text || '', /이미 처리했거나 만료/);
-  await w.msg(1004, '민호 이거 해줘');
-  assert.match(w.lastText(), /미션 요청은 아직 봇 서버에서 지원하지 않아요/, '수락할 길이 없는 요청은 만들지 않음');
+  assert.match(w.toast(), /이미 처리했거나 만료/);
   await w.msg(1004, '루카스 이거 해줘');
   assert.match(w.lastText(), /팀원끼리는/);
   await w.msg(1002, '유리 회의록');
@@ -215,7 +256,48 @@ test('워커 미션 주기: 확인 버튼 뒤 확인한 커밋 위에만 저장(
   assert.equal(w.state.botCommits, 1);
 });
 
-test('워커: main 에 확인 안 된 변경이 있거나, 확인과 저장 사이에 끼어들면 저장하지 않음(승인 세탁 방지)', async () => {
+test('워커 요청·수락: 팀원 요청 → 관리자에게 [수락][거절] 알림 → 수락하면 미션, 요청한 사람에게 결과, 버튼은 메시지에서 빠짐', async () => {
+  const w = world();
+  await w.importer({ owners: { 1002: 'minho', 1004: 'nathan' }, codes: [], verified: w.root });
+  await w.msg(1004, '민호봇');
+  await w.tap(1004, 's:minho'); // 📨 미션 요청
+  assert.match(w.lastText(), /<b>민호<\/b>님에게 요청할 미션을 이 대화에 적어/);
+  await w.msg(1004, '리뷰 부탁해요\nPR 확인');
+  assert.match(w.lastText(), /<b>민호<\/b>님에게 이 미션을 요청할까요\?[\s\S]*• 리뷰 부탁해요 PR 확인/);
+  await w.tap(1004, w.askData());
+  const req = w.dbAtHead().missions.find((m) => m.status === 'requested');
+  assert.deepEqual([req.assignee, req.createdBy, req.title], ['minho', 'nathan', '리뷰 부탁해요 PR 확인']);
+  const notice = w.tg.filter((c) => c.method === 'sendMessage' && c.body.chat_id === '1002').at(-1);
+  assert.match(notice.body.text, /미션 요청이 왔어요[\s\S]*네이뜬님이 보냈어요/);
+  assert.deepEqual(datas(notice.body.reply_markup), [`a:${req.id}`, `n:${req.id}`]);
+  // Actions 확인 전이라도 봇이 만든 커밋 위라서 바로 수락 가능(연달아 누르기)
+  await w.tap(1002, `a:${req.id}`, 1002, notice.body.reply_markup);
+  assert.equal(w.dbAtHead().missions.find((m) => m.id === req.id).status, 'todo');
+  assert.equal(w.state.botCommits, 2);
+  assert.deepEqual(w.tg.filter((c) => c.method === 'editMessageReplyMarkup').at(-1).body.reply_markup, { inline_keyboard: [] }, '처리한 요청 버튼은 뺌');
+  const toNathan = w.tg.filter((c) => c.method === 'sendMessage' && c.body.chat_id === '1004').at(-1);
+  assert.match(toNathan.body.text, /민호님이 미션 요청을 수락했어요/);
+  await w.tap(1002, `a:${req.id}`);
+  assert.match(w.toast(), /이미 처리한 요청/);
+});
+
+test('워커 ✅ 완료·언어: 버튼으로 완료(확인 한 번 더), 🌐 English 를 고르면 저장되고 그 뒤 화면이 영어', async () => {
+  const w = world();
+  await w.importer({ owners: { 1002: 'minho' }, codes: [], verified: w.root });
+  await w.tap(1002, 'c:M-0002');
+  assert.match(w.lastText(), /완료할까요\?\n• \[M-0002\] 파일 다운로드 API 테스트/);
+  await w.tap(1002, w.askData());
+  assert.equal(w.dbAtHead().missions.find((m) => m.id === 'M-0002').status, 'done');
+  await w.msg(1002, '🌐 언어');
+  assert.deepEqual(datas(w.lastMarkup()), ['l:ko', 'l:en', 'l:zh']);
+  await w.tap(1002, 'l:en');
+  assert.equal(w.dbAtHead().langs.minho, 'en');
+  assert.match(w.lastText(), /English from now on[\s\S]*Minho, here's how it works/);
+  await w.msg(1002, 'Minho bot');
+  assert.match(w.lastText(), /👤 <b>Minho's missions<\/b>[\s\S]*📌 1 mission left/);
+});
+
+test('워커: main 에 확인 안 된 변경이 있거나, 확인과 저장 사이에 끼어들거나, 확인 전 변경을 되돌린 push 위에는 저장하지 않음', async () => {
   // ① 처음부터 main 에 확인 안 된 명부 변경
   const a = world();
   await a.importer({ owners: { 1003: 'yuri' }, codes: [], verified: a.root });
@@ -238,6 +320,22 @@ test('워커: main 에 확인 안 된 변경이 있거나, 확인과 저장 사�
   await b.tap(1002, b.askData());
   assert.match(b.lastText(), /❌ 저장하지 못했어요: main 에 아직 확인되지 않은 변경/);
   assert.equal(b.state.botCommits, 0, '끼어든 변경 위에 저장해 승인해 버리지 않음');
+  // ③ 봇 저장 뒤(확인 전) 팀원이 그 저장을 되돌린 push(내용은 확인된 상태와 같음) → 봇은 그 위에 저장하지 않음
+  const c = world();
+  await c.importer({ owners: { 1002: 'minho' }, codes: [], verified: c.root });
+  await c.msg(1002, '루카스 주말 당직');
+  await c.tap(1002, c.askData());
+  assert.equal(c.state.botCommits, 1);
+  c.pushMain({ [DB_FILE]: c.commits.get(c.root).files[DB_FILE] });
+  await c.msg(1002, '루카스 다른 일');
+  await c.tap(1002, c.askData());
+  assert.match(c.lastText(), /❌ 저장하지 못했어요: main 에 아직 확인되지 않은 변경/);
+  assert.equal(c.state.botCommits, 1);
+  // Actions 가 확인한 뒤에는 정상
+  await c.verify();
+  await c.msg(1002, '루카스 다른 일');
+  await c.tap(1002, c.askData());
+  assert.equal(c.state.botCommits, 2);
 });
 
 test('워커 완료·연결 링크: "민호 미션완료 2" 확인 후 완료, 거의 동시에 두 번 눌러도 실패로 덮어쓰지 않음, 관리자만 링크 생성', async () => {
@@ -258,7 +356,7 @@ test('워커 완료·연결 링크: "민호 미션완료 2" 확인 후 완료, �
   assert.match(w.lastText(), /관리자만/);
 });
 
-test('notify 중계 모드: 워커가 미연결이면 보류, 워커 실패(4xx)면 "🆕" 줄 없이 다시, 직접 토큰 없이도 동작', async () => {
+test('notify 중계 모드: 워커가 미연결이면 보류, 워커 실패(4xx)면 "🆕" 줄 없이 다시, ✅ 버튼도 함께 넘김', async () => {
   const db0 = { nextId: 1, missions: [] };
   const files = (db) => ({ [DB_FILE]: JSON.stringify(db), [MEMBERS_FILE]: JSON.stringify({ members: M }) });
   const git = fakeGit([files(db0)]);
@@ -268,15 +366,94 @@ test('notify 중계 모드: 워커가 미연결이면 보류, 워커 실패(4xx)
   setMissions(db1, '루카스', parseMissionList('1. L'), 'changmin', M, T);
   const c1 = git.add(files(db1));
   const sent = [];
-  const relay = async (member, text) => {
+  const relay = async (member, text, extra) => {
     if (member === 'lucas') return { status: 'unconnected' };
     if (text.includes('🆕')) throw Object.assign(new Error('Bad Request: message is too long'), { code: 400 });
-    sent.push({ member, text });
+    sent.push({ member, text, extra });
     return { status: 'sent', messageId: 7 };
   };
   const ledger = { verifiedSha: c0, owner: 'changmin', members: {}, alerts: [], flagged: [], notices: [] };
   const r = await runNotify({ env: { EVENT_NAME: 'push', BEFORE_SHA: c0, AFTER_SHA: c1, ACTOR: 'darrenpual', GITHUB_REPOSITORY_OWNER: 'newcode135-prog' }, git, gh: { pushes: async () => new Map([[c1, 'darrenpual']]), isRepoAdmin: async () => false }, relay, ledger, now: () => T });
   assert.deepEqual(r.results.map((x) => [x.member, x.status]).sort(), [['lucas', 'unconnected'], ['minho', 'sent']]);
   assert.ok(!sent[0].text.includes('🆕'), '4xx 면 기본 목록으로');
+  assert.deepEqual(datas(sent[0].extra.reply_markup), ['c:M-0001', 'c:M-0002', 'v:minho']);
   assert.equal(ledger.members.lucas.pending, true);
+});
+
+// ---------------- 리뷰 회귀(워커는 요청이 정말 동시에 돈다) ----------------
+
+test('리뷰 회귀: 두 관리자가 거의 동시에 저장해도 둘 다 성공, 같은 확인을 두 번 눌러도 실패로 덮어쓰지 않음', async () => {
+  const w = world();
+  await w.importer({ owners: { 1002: 'minho', 1003: 'yuri' }, codes: [], verified: w.root });
+  await w.msg(1002, '창민 이거 결제해줘');
+  const a = w.askData();
+  await w.msg(1003, '루카스 주말 당직');
+  const b = w.askData();
+  await Promise.all([w.tap(1002, a), w.tap(1003, b)]);
+  assert.equal(w.state.botCommits, 2, '진 쪽도 이긴 쪽의 봇 커밋 위에 다시 저장');
+  const titles = w.dbAtHead().missions.map((m) => m.title);
+  assert.ok(titles.includes('이거 결제해줘') && titles.includes('주말 당직'));
+  await w.msg(1002, '유리 회의록 정리');
+  const c = w.askData();
+  await Promise.all([w.tap(1002, c), w.tap(1002, c)]);
+  const edits = w.tg.filter((x) => x.method === 'editMessageText').map((x) => x.body.text);
+  assert.ok(!edits.some((t) => t.startsWith('❌')), edits.join(' | '));
+  assert.equal(w.dbAtHead().missions.filter((m) => m.title === '회의록 정리').length, 1);
+});
+
+test('리뷰 회귀: 📨 쓰기 중의 "… 연결 링크" 글은 미션 내용, 대표관리자 링크는 대표관리자만, 끊긴 대화의 확인 버튼은 무효', async () => {
+  const w = world();
+  await w.importer({ owners: { 1002: 'minho', 1003: 'yuri' }, codes: [], verified: w.root });
+  await w.tap(1002, 's:changmin');
+  await w.msg(1002, '카카오 연결 링크');
+  assert.match(w.lastText(), /<b>창민<\/b>님에게 이 미션을 줄까요\?\n• 카카오 연결 링크/);
+  await w.msg(1003, '창민 연결링크'); // 창민은 아직 미연결 — 관리자가 대표관리자로 연결하는 링크를 만들 수 없음
+  assert.match(w.lastText(), /대표관리자만/);
+  assert.equal([...w.kv.keys()].filter((k) => k.startsWith('code:')).length, 0);
+  // 유리가 확인 버튼을 받아 둔 뒤 연결이 다른 대화로 옮겨지면 그 버튼은 무효
+  await w.msg(1003, '루카스 몰래 넣은 미션');
+  const staged = w.askData();
+  w.kv.set('member:yuri', '9009');
+  w.kv.set('chat:9009', 'yuri');
+  await w.tap(1003, staged);
+  assert.ok(!w.dbAtHead().missions.some((m) => m.title === '몰래 넣은 미션'));
+  // chat→팀원이 남아 있어도 팀원→chat 이 다르면 연결 안 된 것으로
+  await w.msg(1003, '유리봇');
+  assert.match(w.lastText(), /본인 연결 링크/);
+});
+
+test('리뷰 회귀: 중계 버튼은 inline_keyboard 하나만(다른 키·웹앱 버튼 거절), 확인 안 된 완료 push 로 "이미 완료" 라고 하지 않음', async () => {
+  const w = world();
+  await w.importer({ owners: { 1002: 'minho' }, codes: [], verified: w.root });
+  for (const bad of [{ inline_keyboard: [], keyboard: [[{ text: 'x', web_app: { url: 'https://evil.example' } }]], is_persistent: true }, { inline_keyboard: [], remove_keyboard: true }]) {
+    assert.equal((await (await w.relay('/relay/send', { member: 'minho', text: 'x', reply_markup: bad })).json()).status, 'failed');
+  }
+  // 누가 확인 없이 M-0001 을 완료로 push → 봇은 저장을 거절하고, "이미 완료" 라고 속지 않음
+  const db = w.dbAtHead();
+  db.missions.find((m) => m.id === 'M-0001').status = 'done';
+  db.missions.find((m) => m.id === 'M-0001').doneAt = T;
+  w.pushMain({ [DB_FILE]: JSON.stringify(db, null, 2) });
+  await w.tap(1002, 'c:M-0001');
+  await w.tap(1002, w.askData());
+  assert.match(w.lastText(), /❌ 저장하지 못했어요: main 에 아직 확인되지 않은 변경/);
+});
+
+test('리뷰 회귀: 중계 모드에서 워커가 모르는 사람(다른 컴퓨터에서 연결)은 예전처럼 직접 보냄', async () => {
+  const db0 = { nextId: 1, missions: [] };
+  const files = (db) => ({ [DB_FILE]: JSON.stringify(db), [MEMBERS_FILE]: JSON.stringify({ members: M }) });
+  const git = fakeGit([files(db0)]);
+  const c0 = git.head();
+  const db1 = JSON.parse(JSON.stringify(db0));
+  setMissions(db1, '유리', parseMissionList('1. Y'), 'changmin', M, T);
+  const c1 = git.add(files(db1));
+  const direct = [];
+  const r = await runNotify({
+    env: { EVENT_NAME: 'push', BEFORE_SHA: c0, AFTER_SHA: c1, ACTOR: 'darrenpual', GITHUB_REPOSITORY_OWNER: 'newcode135-prog', TELEGRAM_BOT_TOKEN: 't', TELEGRAM_CHAT_ID_YURI: '1003' },
+    git, gh: { pushes: async () => new Map([[c1, 'darrenpual']]), isRepoAdmin: async () => false },
+    relay: async () => ({ status: 'unconnected' }),
+    send: async (token, chatId, text) => { direct.push(chatId); return { message_id: 1, chat: { id: Number(chatId) } }; },
+    ledger: { verifiedSha: c0, owner: 'changmin', members: {}, alerts: [], flagged: [], notices: [] }, now: () => T,
+  });
+  assert.deepEqual(r.results.map((x) => [x.member, x.status]), [['yuri', 'sent']]);
+  assert.deepEqual(direct, ['1003']);
 });
