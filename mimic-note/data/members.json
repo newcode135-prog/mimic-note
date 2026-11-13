@@ -30,6 +30,12 @@
       "name": "루카스",
       "role": "member",
       "github": "ravityl"
+    },
+    {
+      "id": "mino",
+      "name": "미노",
+      "role": "member",
+      "github": null
     }
   ]
 }

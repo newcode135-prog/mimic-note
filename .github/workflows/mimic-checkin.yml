@@ -72,6 +72,7 @@ jobs:
           TELEGRAM_CHAT_ID_YURI: ${{ secrets.TELEGRAM_CHAT_ID_YURI }}
           TELEGRAM_CHAT_ID_NATHAN: ${{ secrets.TELEGRAM_CHAT_ID_NATHAN }}
           TELEGRAM_CHAT_ID_LUCAS: ${{ secrets.TELEGRAM_CHAT_ID_LUCAS }}
+          TELEGRAM_CHAT_ID_MINO: ${{ secrets.TELEGRAM_CHAT_ID_MINO }}
         run: node mimic-note/notify.mjs
       - name: 발송 장부 저장
         if: always() && steps.notify.outputs.ledger_changed == 'true'

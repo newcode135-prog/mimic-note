@@ -264,6 +264,7 @@ bash mimic-note/bot-install-macmini.sh   # 맥미니에 상시 실행으로 설�
 | 유리 | yuri | 관리자(3순위) | emileepark5281-cmd |
 | 네이뜬 | nathan | 팀원 | nathanywang2003-bit |
 | 루카스 | lucas | 팀원 | ravityl |
+| 미노 | mino | 팀원 | 미정 |
 
 - 미션은 **창민**이 만들고, 관리자들이 함께 관리합니다. 최종 결정은 창민.
 - 명부: [`data/members.json`](data/members.json) · 미션: [`data/missions.json`](data/missions.json)
