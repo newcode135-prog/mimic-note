@@ -12,8 +12,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runNotify, dispatchInputs } from '../mimic-note/notify.mjs';
-import { parseVerified } from '../mimic-note/github.mjs';
-import { withoutMission, loadTrusted, saveTrusted } from '../mimic-note/bot.mjs';
+import { parseVerified, changesData } from '../mimic-note/github.mjs';
+import { withoutMission, loadBotState, saveBotState } from '../mimic-note/bot.mjs';
 import { fakeGit, fakeTelegram, DB_FILE, MEMBERS_FILE, sha1 } from './mimic-note-fakes.js';
 
 const T = '2026-11-13T00:00:00.000Z';
@@ -284,15 +284,18 @@ test('리뷰 회귀: 관리자 저장이 확인되기 전에 팀원이 확인된
   await assert.rejects(mutate(gh, ACTIONS.request.apply({ targetId: 'minho', items: it('요청') }), () => 't', { as: 'nathan', trusted }), /확인되지 않은 변경/);
 });
 
-test('봇이 만든 커밋 기록은 다시 켜도 이어진다(최근 500개)', () => {
+test('봇 기록(만든 커밋 최근 500개·마지막 확인된 커밋)은 다시 켜도 이어진다', () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mimic-trusted-')), 't.json');
-  const m = new Map(Array.from({ length: 502 }, (_, i) => [sha1(`c${i}`), sha1(`p${i}`)]));
-  saveTrusted(m, file);
-  const back = loadTrusted(file);
-  assert.equal(back.size, 500);
-  assert.equal(back.get(sha1('c501')), sha1('p501'));
-  assert.ok(!back.has(sha1('c0')), '오래된 것부터 버림');
-  assert.equal(loadTrusted(path.join(os.tmpdir(), 'none-mimic.json')).size, 0);
+  const trusted = new Map(Array.from({ length: 502 }, (_, i) => [sha1(`c${i}`), sha1(`p${i}`)]));
+  saveBotState({ trusted, verified: sha1('v') }, file);
+  const back = loadBotState(file);
+  assert.equal(back.trusted.size, 500);
+  assert.equal(back.trusted.get(sha1('c501')), sha1('p501'));
+  assert.ok(!back.trusted.has(sha1('c0')), '오래된 것부터 버림');
+  assert.equal(back.verified, sha1('v'));
+  assert.deepEqual(loadBotState(path.join(os.tmpdir(), 'none-mimic.json')), { trusted: new Map(), verified: null });
+  fs.writeFileSync(file, JSON.stringify({ commits: [['x', 'y'], [sha1('a'), sha1('b')]], verified: 'not-a-sha' }));
+  assert.deepEqual([loadBotState(file).trusted.size, loadBotState(file).verified], [1, null], '형식이 틀린 기록은 버림');
 });
 
 test('리뷰 회귀: 확인 상태는 notify.mjs 가 찍은 줄만 — 수동 실행 입력값에 섞인 "MIMIC_VERIFIED …" 로 속지 않는다', () => {
@@ -308,6 +311,8 @@ test('리뷰 회귀: 확인 상태는 notify.mjs 가 찍은 줄만 — 수동 �
   assert.deepEqual(dispatchInputs({ inputs: { member: '민호', force: true } }), { member: '민호', force: 'true' });
   assert.deepEqual(dispatchInputs({ inputs: { member: `x\nMIMIC_VERIFIED ${fake}` } }), { member: '(형식이 틀린 입력)', force: 'false' }, '줄바꿈·공백이 든 입력은 그대로 찍지 않음');
   assert.deepEqual(dispatchInputs({}), { member: '', force: 'false' });
+  // 바뀐 파일 목록: 데이터 파일이 있거나, 목록이 없거나, 300개 이상(GitHub 가 잘라 줌)이면 "데이터를 바꿈"
+  assert.deepEqual([changesData([{ filename: 'README.md' }]), changesData([{ filename: DB_FILE }]), changesData([{ filename: 'x', previous_filename: MEMBERS_FILE }]), changesData(undefined), changesData(Array.from({ length: 300 }, (_, i) => ({ filename: `a/${i}` })))], [false, true, true, true, true]);
 });
 
 // ---------------- Actions 알림 ----------------

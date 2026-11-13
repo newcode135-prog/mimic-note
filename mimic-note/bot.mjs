@@ -43,13 +43,18 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
 export function botRunningHere() {
   try { const { pid } = JSON.parse(fs.readFileSync(LOCK(), 'utf8')); return pid !== process.pid && alive(pid); } catch { return false; }
 }
-const TRUSTED = () => path.join(HOME_DIR(), 'core-bot-trusted.json');
-export function loadTrusted(file = TRUSTED()) {
-  try { return new Map(JSON.parse(fs.readFileSync(file, 'utf8')).commits.filter((x) => /^[0-9a-f]{40}$/.test(x?.[0]))); } catch { return new Map(); }
+// 이 컴퓨터에만 남기는 봇 기록: 봇이 만든 커밋 → 부모(최근 500개)와 마지막으로 알아낸 확인된 커밋. 다시 켜도 이어진다.
+const BOT_STATE = () => path.join(HOME_DIR(), 'core-bot-trusted.json');
+const isSha = (s) => /^[0-9a-f]{40}$/.test(s || '');
+export function loadBotState(file = BOT_STATE()) {
+  try {
+    const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return { trusted: new Map((j.commits || []).filter((x) => isSha(x?.[0]) && isSha(x?.[1]))), verified: isSha(j.verified) ? j.verified : null };
+  } catch { return { trusted: new Map(), verified: null }; }
 }
-export function saveTrusted(map, file = TRUSTED()) {
-  while (map.size > 500) map.delete(map.keys().next().value);
-  try { fs.writeFileSync(file, JSON.stringify({ commits: [...map] })); } catch (e) { console.log(`봇 커밋 기록 저장 실패: ${e.message}`); }
+export function saveBotState(s, file = BOT_STATE()) {
+  while (s.trusted.size > 500) s.trusted.delete(s.trusted.keys().next().value);
+  try { fs.writeFileSync(file, JSON.stringify({ commits: [...s.trusted], verified: s.verified })); } catch (e) { console.log(`봇 기록 저장 실패: ${e.message}`); }
 }
 // 누른 버튼의 미션만 메시지에서 뺀다(처리한 요청 버튼이 남아 다시 눌리지 않게)
 export const withoutMission = (markup, missionId) => ({
@@ -80,13 +85,21 @@ async function main() {
 
   // GitHub Actions 가 확인한 상태(커밋)와 그때의 명부·미션. 커밋 내용은 바뀌지 않으므로 커밋별로 기억한다.
   const memo = new Map();
-  let verified = { sha: null, at: 0 };
+  const bs = loadBotState();
+  let verified = { sha: bs.verified, at: 0 };
+  // 확인된 커밋을 새로 찾는다. 못 찾으면(실행이 연달아 취소·건너뜀) 마지막으로 알아낸 것 — 예전 것이어도 확인된 상태다.
+  const freshVerified = () => {
+    const s = github.verifiedSha();
+    if (s && s !== bs.verified) { bs.verified = s; saveBotState(bs); }
+    verified = { sha: s || verified.sha, at: Date.now() };
+    return verified.sha;
+  };
   const verifiedSha = () => {
-    // 못 찾으면(실행이 연달아 취소된 직후 등) 마지막으로 알아낸 확인된 커밋을 계속 쓴다 — 예전 것이어도 확인된 상태다
-    if (Date.now() - verified.at > 60e3) verified = { sha: github.verifiedSha() || verified.sha, at: Date.now() };
+    if (Date.now() - verified.at > 60e3) freshVerified();
     if (!verified.sha) throw new Error('GitHub Actions 의 확인 상태를 아직 알 수 없어요');
     return verified.sha;
   };
+  const store = { ...github, verifiedSha: freshVerified }; // 저장(mutate)은 늘 새로 찾되, 못 찾으면 마지막 것으로
   const read = (file, sha) => {
     const k = `${file}@${sha}`;
     if (!memo.has(k)) {
@@ -96,8 +109,7 @@ async function main() {
     }
     return memo.get(k);
   };
-  // 이 봇이 만든 커밋 → 그 부모(core.mjs safeHead). 다시 켜도 이어지게 이 컴퓨터에만 저장한다(최근 500개).
-  const trusted = loadTrusted();
+  const trusted = bs.trusted; // 이 봇이 만든 커밋 → 그 부모(core.mjs safeHead)
   const state = async () => {
     let sha = verifiedSha();
     if (trusted.size) {
@@ -113,10 +125,10 @@ async function main() {
     return { members, db };
   };
   const save = async (apply, describe, as) => {
-    const w = await mutate(github, apply, describe, { as, via: '텔레그램', trusted });
+    const w = await mutate(store, apply, describe, { as, via: '텔레그램', trusted });
     if (w.commit) {
       trusted.set(w.commit, w.parent);
-      saveTrusted(trusted);
+      saveBotState(bs);
     }
     verified.at = 0; // 다음 버튼은 새 확인 상태를 보게
     return w;
@@ -245,7 +257,12 @@ async function main() {
         const active = c && Date.now() - c.at < PENDING_MS ? { target: members.find((m) => m.id === c.target.id) || c.target } : null;
         const d = decide(msg, { members, chatOwners, compose: active });
         if (d.kind !== 'act-error') compose.delete(replyTo); // 내용이 잘못됐으면 다시 적을 수 있게 남겨 둔다
-        if (d.kind === 'ignore' || d.kind === 'link') continue;
+        if (d.kind === 'ignore') continue;
+        if (d.kind === 'link') { // 이미 연결된 대화에서 연결 링크를 누름(남의 링크 등) — 연결은 바꾸지 않는다
+          const me2 = members.find((m) => m.id === chatOwners.get(replyTo));
+          await send(replyTo, `이 대화는 이미 <b>${esc(me2?.name || '')}</b>님으로 연결돼 있어요. 다른 사람의 연결 링크는 그 사람 <b>본인 텔레그램</b>에서 열어야 해요(링크는 그대로 쓸 수 있어요).`);
+          continue;
+        }
         if (d.kind === 'menu' || d.kind === 'unlinked') await send(d.chatId, menuText(d.owner || null, members), { reply_markup: menuKeyboard(members) });
         else if (d.kind === 'cancel') await send(d.chatId, '취소했어요.');
         else if (d.kind === 'board') {
