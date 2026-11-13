@@ -1,5 +1,5 @@
 {
-  "nextId": 27,
+  "nextId": 31,
   "missions": [
     {
       "id": "M-0001",
@@ -302,6 +302,50 @@
       "createdAt": "2026-11-13T07:46:01.859Z",
       "doneAt": null,
       "movedFrom": "newcode135-prog/mimic M-0023"
+    },
+    {
+      "id": "M-0027",
+      "assignee": "mino",
+      "order": 1,
+      "title": "텔레그램 연결 — 민호님께 받은 본인 링크를 눌러 [시작]",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T09:37:53.310Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0028",
+      "assignee": "mino",
+      "order": 2,
+      "title": "GitHub 아이디를 민호님에게 알려 주기(저장소 초대용)",
+      "detail": "아이디가 없으면 github.com 에서 가입한 뒤 알려 주세요",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T09:37:53.310Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0029",
+      "assignee": "mino",
+      "order": 3,
+      "title": "내 PC 준비 — git·Node 18 이상·Claude Code 설치 후 터미널에서 gh auth login",
+      "detail": "설치 방법: https://github.com/newcode135-prog/mimic-note/blob/main/mimic-note/guides/유리-온보딩.md 의 \"1. 설치\"",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T09:37:53.310Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0030",
+      "assignee": "mino",
+      "order": 4,
+      "title": "첫 접속(체크인) — Claude Code 에 `미노 https://github.com/newcode135-prog/mimic-note` 를 보내고 대전제와 미션 확인",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T09:37:53.310Z",
+      "doneAt": null
     }
   ]
 }
