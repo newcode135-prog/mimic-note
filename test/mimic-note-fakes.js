@@ -12,7 +12,8 @@ export const MEMBERS_FILE = 'mimic-note/data/members.json';
 // beforeWrite(store): 쓰기 직전에 다른 사람이 끼어드는 상황을 흉내 낼 때
 export function fakeGithub({ dir, login = 'newcode135-prog', push = true, db = { nextId: 1, missions: [] }, members, beforeWrite, results = [] } = {}) {
   const store = new Map();
-  const put = (p, text) => store.set(p, { text, sha: sha1(text) });
+  // sha = git blob id(실제 GitHub Contents API 와 같게)
+  const put = (p, text) => store.set(p, { text, sha: sha1(`blob ${Buffer.byteLength(text)}\0${text}`) });
   put(MEMBERS_FILE, members ? JSON.stringify({ members }, null, 2) : fs.readFileSync(path.join(dir, 'data', 'members.json'), 'utf8'));
   put(DB_FILE, `${JSON.stringify(db, null, 2)}\n`);
   const commits = [];
@@ -84,9 +85,9 @@ export function fakeGit(history) {
 export function fakeTelegram({ fail = {} } = {}) {
   const sent = [];
   let mid = 500;
-  const send = async (token, chatId, text) => {
+  const send = async (token, chatId, text, extra = {}) => {
     if (fail[chatId]) throw fail[chatId];
-    sent.push({ token, chatId, text });
+    sent.push({ token, chatId, text, extra });
     return { message_id: ++mid, chat: { id: Number(chatId) } };
   };
   return { sent, send };

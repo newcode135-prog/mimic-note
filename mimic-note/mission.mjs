@@ -19,7 +19,7 @@
 //   --no-wait  텔레그램 발송 결과를 기다리지 않음
 //
 // 누가 바꾸는지는 이 컴퓨터의 gh 로그인 계정(GitHub 인증) ↔ members.json 의 github 로 정한다.
-// 미션 만들기·정하기·후순위는 관리자(owner·admin)만, 완료는 본인 또는 관리자만.
+// 미션 만들기·정하기·후순위는 관리자(owner·admin)만, 완료는 본인 또는 관리자만. (팀원의 미션 요청은 텔레그램 봇에서만)
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {

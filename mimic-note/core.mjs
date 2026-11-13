@@ -243,6 +243,68 @@ export function addMissions(db, assignee, items, by, members, { top = false } = 
   return { added, skipped, changed: added.length > 0 };
 }
 
+// ---- 미션 요청(팀원 → 관리자) ----
+// 대전제 2·3번(미션을 만들고 배정하는 것은 관리자만): 팀원은 관리자에게 '요청'만 보내고, 관리자가 수락해야 미션(todo)이 된다.
+// status: requested(대기) → todo(수락) 또는 declined(거절). 대기 요청은 목록·진행률에 들어가지 않는다.
+export const REQUEST_LIMIT = 10; // 한 사람이 동시에 걸어 둘 수 있는 대기 요청 수(실수·도배 방지)
+
+const adminNames = (members) => members.filter((m) => ADMIN_ROLES.has(m.role)).map((m) => m.name).join('·');
+
+export function pendingRequests(db, memberId) {
+  return db.missions.filter((m) => m.assignee === memberId && m.status === 'requested').sort((a, b) => a.id.localeCompare(b.id));
+}
+
+// from 이 to 에게 미션을 보낼 때: 관리자 → 'add'(바로 미션), 팀원 → 다른 관리자에게만 'request', 그 밖은 null(못 보냄)
+export function sendMode(from, to) {
+  if (!from || !to) return null;
+  if (ADMIN_ROLES.has(from.role)) return 'add';
+  return to.id !== from.id && ADMIN_ROLES.has(to.role) ? 'request' : null;
+}
+
+export function sendDeniedText(from, to, members) {
+  if (from.id === to.id) return `팀원은 본인 미션을 직접 만들 수 없어요(대전제: 배정은 관리자만). 관리자(${esc(adminNames(members))})에게 요청하세요.`;
+  return `팀원끼리는 미션을 주고받을 수 없어요(대전제: 배정은 관리자만). ${esc(to.name)}님에게 맡길 일이면 관리자(${esc(adminNames(members))})에게 요청하세요.`;
+}
+
+export function requestMissions(db, assignee, items, by, members, now = new Date().toISOString()) {
+  const target = requireMember(assignee, members);
+  const author = requireMember(by, members);
+  if (sendMode(author, target) !== 'request') throw new Error(sendDeniedText(author, target, members).replace(/<[^>]+>/g, ''));
+  const have = new Set([...openMissions(db, target.id), ...pendingRequests(db, target.id)].map((m) => normTitle(m.title)));
+  const skipped = [];
+  const fresh = [];
+  for (const it of items) {
+    const k = normTitle(it.title);
+    if (!k) continue;
+    if (have.has(k)) skipped.push(it.title);
+    else { have.add(k); fresh.push(it); }
+  }
+  const waiting = db.missions.filter((m) => m.status === 'requested' && m.createdBy === author.id).length;
+  if (waiting + fresh.length > REQUEST_LIMIT) throw new Error(`대기 중인 요청은 한 사람당 ${REQUEST_LIMIT}개까지예요(지금 ${waiting}개). 받은 사람이 수락·거절한 뒤 다시 보내 주세요.`);
+  const added = fresh.map((it) => {
+    const m = { id: `M-${String(db.nextId).padStart(4, '0')}`, assignee: target.id, order: 0, title: String(it.title).trim(), detail: String(it.detail || '').trim(), status: 'requested', createdBy: author.id, createdAt: now, doneAt: null };
+    db.nextId += 1;
+    db.missions.push(m);
+    return m;
+  });
+  return { added, skipped, changed: added.length > 0 };
+}
+
+// 수락은 관리자(받은 관리자 또는 다른 관리자)만 — 배정 결정이므로. 거절은 받은 사람 또는 관리자.
+export function respondRequest(db, missionId, accept, by, members, now = new Date().toISOString()) {
+  const m = db.missions.find((x) => x.id === missionId);
+  if (!m || m.status !== 'requested') throw new Error('이미 처리했거나 없는 요청이에요.');
+  const actor = requireMember(by, members);
+  if (accept ? !ADMIN_ROLES.has(actor.role) : actor.id !== m.assignee && !ADMIN_ROLES.has(actor.role)) {
+    throw new Error(accept ? '요청 수락(미션 배정)은 관리자만 할 수 있어요.' : '요청은 받은 사람이나 관리자만 거절할 수 있어요.');
+  }
+  if (accept) {
+    m.order = db.missions.filter((x) => x.assignee === m.assignee && x.id !== m.id).reduce((a, x) => Math.max(a, x.order ?? 0), 0) + 1;
+    Object.assign(m, { status: 'todo', acceptedAt: now, acceptedBy: actor.id });
+  } else Object.assign(m, { status: 'declined', declinedAt: now, declinedBy: actor.id });
+  return { mission: m, changed: true };
+}
+
 export function memberByGithub(login, members) {
   const key = String(login || '').toLowerCase();
   return (key && members.find((m) => m.github && m.github.toLowerCase() === key)) || null;
@@ -273,7 +335,7 @@ export function validateMembers(members) {
 }
 
 // 미션 DB 검사(JSON 스키마 대신 직접): 저장 전·발송 전에 깨진 데이터를 막는다.
-const STATUSES = new Set(['todo', 'done', 'replaced']);
+const STATUSES = new Set(['todo', 'done', 'replaced', 'requested', 'declined']);
 export function validateDb(db, members) {
   if (!db || typeof db !== 'object' || Array.isArray(db)) return ['미션 DB 가 객체가 아닙니다'];
   const errs = [];
@@ -292,7 +354,7 @@ export function validateDb(db, members) {
     if (memberIds && !memberIds.has(m?.assignee)) errs.push(`${at}: 명부에 없는 담당자 ${m?.assignee}`);
     if (typeof m?.title !== 'string' || !m.title.trim() || m.title.length > 200 || /[\r\n]/.test(m.title)) errs.push(`${at}: 제목(1~200자 한 줄)`);
     if (m?.detail != null && (typeof m.detail !== 'string' || m.detail.length > 4000)) errs.push(`${at}: 설명(4000자 이하)`);
-    if (!STATUSES.has(m?.status)) errs.push(`${at}: status 는 todo·done·replaced`);
+    if (!STATUSES.has(m?.status)) errs.push(`${at}: status 는 todo·done·replaced·requested·declined`);
     if (typeof m?.order !== 'number' || !Number.isFinite(m.order)) errs.push(`${at}: order 숫자`);
     if (m?.priority != null && m.priority !== 'low') errs.push(`${at}: priority 는 low 만`);
     if (m?.status === 'done' && !m.doneAt) errs.push(`${at}: 완료인데 doneAt 없음`);
@@ -359,23 +421,171 @@ export function renderDoneNotice(assignee, items, db, members = []) {
 export const BOT_NAME = '코어 오브 미믹노트';
 
 
-// 늘 떠 있는 버튼판: 팀원 이름 + "봇", 한 줄에 3개
+export const TEAM_BUTTON = '📋 팀 현황';
+export const SENT_BUTTON = '📤 보낸 미션';
+
+// 늘 떠 있는 버튼판: 팀원 이름 + "봇"(한 줄에 3개) + 맨 아래 [팀 현황][보낸 미션]
 export function menuKeyboard(members) {
   const buttons = members.map((m) => ({ text: `${m.name}봇` }));
   const keyboard = [];
   for (let i = 0; i < buttons.length; i += 3) keyboard.push(buttons.slice(i, i + 3));
+  keyboard.push([{ text: TEAM_BUTTON }, { text: SENT_BUTTON }]);
   return { keyboard, resize_keyboard: true, is_persistent: true };
 }
 
-export function menuText(owner) {
+export function menuText(owner, members = []) {
   if (!owner) return ['🎯 <b>코어 오브 미믹노트</b>', '', '아래에서 본인 이름 버튼을 누르세요. 처음이면 관리자에게 받은 <b>본인 연결 링크</b>로 [시작]을 먼저 눌러 주세요.'].join('\n');
-  const lines = ['🎯 <b>코어 오브 미믹노트</b>', '', `${esc(owner.name)}님, 아래 <b>${esc(owner.name)}봇</b>을 누르면 지금 보고할 미션이 와요.`, `끝내면 <code>${esc(owner.name)} 미션완료 1</code> 처럼 보내세요.`];
-  if (ADMIN_ROLES.has(owner.role)) lines.push('', '미션 주기: <code>창민 이거 결제해줘</code> · 바꾸기: <code>창민 미션설정</code> + 줄마다 <code>1. …</code>');
-  return lines.join('\n');
+  const n = esc(owner.name);
+  const admin = ADMIN_ROLES.has(owner.role);
+  return ['🎯 <b>코어 오브 미믹노트</b>', '', `${n}님, 이렇게 써요`,
+    `• <b>${n}봇</b> → 내 미션 · <b>✅</b> 버튼으로 완료${admin ? ' · 받은 요청 수락/거절' : ''}`,
+    admin ? '• 다른 사람 이름봇 → 그 사람 미션 보기 · <b>📨 미션 주기</b>' : `• 다른 사람 이름봇 → 그 사람 미션 보기 · 관리자(${esc(adminNames(members))})에게는 <b>📨 미션 요청</b>(수락하면 미션이 돼요)`,
+    `• <b>${TEAM_BUTTON}</b> · <b>${SENT_BUTTON}</b>(내가 준·요청한 미션이 어떻게 됐는지)`,
+    '', '글로도 돼요', admin ? '<code>창민 이거 결제해줘</code> → 미션 주기 · <code>창민 미션설정</code> + 줄마다 <code>1. …</code> → 바꾸기' : `<code>${esc(members.find((m) => ADMIN_ROLES.has(m.role) && m.id !== owner.id)?.name || '민호')} 이거 봐줘</code> → 미션 요청`,
+    `<code>${n} 미션완료 1</code> → 완료`, '', '미션이 생기거나 바뀌면 이 대화로 알림이 와요. 미션을 준 사람에게는 완료 알림이 가요.'].join('\n');
 }
 
 export function missionsText(member, db) {
-  return `${renderTelegram(member, db)}\n\n끝낸 미션은 여기에 <code>${esc(member.name)} 미션완료 1</code> 처럼 보내면 돼요.`;
+  return boardText(member, member, db, []);
+}
+
+// 이름봇을 눌렀을 때: 본인이면 내 미션 + 받은 요청, 남이면 그 사람 미션(보기만) + 보낼 수 있는지 안내
+export function boardText(viewer, member, db, members) {
+  const lines = [renderTelegram(member, db)];
+  if (viewer.id === member.id) {
+    const reqs = pendingRequests(db, member.id);
+    if (reqs.length) {
+      const who = (id) => members.find((x) => x.id === id)?.name || id;
+      lines.push('', `📨 <b>받은 요청 ${reqs.length}개</b> (수락하면 내 미션이 돼요)`, ...reqs.slice(0, 5).map((m, i) => `요청 ${i + 1}. ${esc(clip(m.title, 120))} — ${esc(who(m.createdBy))}님`));
+      if (reqs.length > 5) lines.push(`… 외 ${reqs.length - 5}개(먼저 온 것부터 처리하면 이어서 보여요)`);
+    }
+    lines.push('', openMissions(db, member.id).length ? '끝낸 미션은 아래 <b>✅ 번호</b>를 누르세요.' : '새 미션이 오면 여기로 알려 드려요.');
+  } else {
+    const mode = sendMode(viewer, member);
+    lines.push('', mode === 'add' ? `📨 아래 버튼으로 ${esc(member.name)}님에게 미션을 줄 수 있어요.`
+      : mode === 'request' ? `📨 아래 버튼으로 ${esc(member.name)}님에게 미션을 요청할 수 있어요(수락하면 미션이 돼요).`
+        : `👀 보기만 할 수 있어요. ${sendDeniedText(viewer, member, members)}`);
+  }
+  return lines.join('\n');
+}
+
+// 미션 완료 버튼(✅ 1 … ✅ 10, 한 줄에 5개). 버튼에는 미션 ID 를 넣어, 목록이 바뀐 뒤 눌러도 그 미션만 처리한다.
+export function doneButtons(db, memberId) {
+  const open = openMissions(db, memberId).slice(0, 10);
+  const rows = [];
+  for (let i = 0; i < open.length; i += 5) rows.push(open.slice(i, i + 5).map((m, j) => ({ text: `✅ ${i + j + 1}`, callback_data: `c:${m.id}` })));
+  return rows;
+}
+
+// GitHub Actions 가 보내는 목록 메시지에 붙는 버튼(봇이 켜져 있을 때 동작)
+export function listKeyboard(db, memberId) {
+  return { inline_keyboard: [...doneButtons(db, memberId), [{ text: '🔄 새로고침', callback_data: `v:${memberId}` }]] };
+}
+
+export function boardKeyboard(viewer, member, db) {
+  const rows = [];
+  if (viewer.id === member.id) {
+    rows.push(...doneButtons(db, member.id));
+    if (ADMIN_ROLES.has(viewer.role)) {
+      pendingRequests(db, member.id).slice(0, 5).forEach((m, i) => rows.push([{ text: `✅ 요청 ${i + 1} 수락`, callback_data: `a:${m.id}` }, { text: `❌ 요청 ${i + 1} 거절`, callback_data: `n:${m.id}` }]));
+    }
+  } else {
+    const mode = sendMode(viewer, member);
+    if (mode) rows.push([{ text: `📨 ${member.name}님에게 미션 ${mode === 'add' ? '주기' : '요청'}`, callback_data: `s:${member.id}` }]);
+  }
+  rows.push([{ text: '🔄 새로고침', callback_data: `v:${member.id}` }]);
+  return { inline_keyboard: rows };
+}
+
+// 팀 현황: 사람마다 남은·완료(+관리자는 받은 요청), 텔레그램 연결 여부(linked: 연결된 팀원 아이디 Set)
+export function teamText(members, db, linked = null) {
+  const lines = ['📋 <b>팀 현황</b>', ''];
+  for (const m of members) {
+    const open = openMissions(db, m.id).length;
+    const done = doneMissions(db, m.id).length;
+    const req = pendingRequests(db, m.id).length;
+    lines.push(`• <b>${esc(m.name)}</b> — 남은 ${open} · 완료 ${done}${req ? ` · 📨 요청 ${req}` : ''}${linked && !linked.has(m.id) ? ' · <i>텔레그램 미연결</i>' : ''}`);
+  }
+  lines.push('', '이름봇을 누르면 그 사람 미션을 볼 수 있어요.');
+  return lines.join('\n');
+}
+
+// 보낸 미션: 내가 다른 사람에게 준·요청한 미션이 어떻게 됐는지(최근 것부터)
+export function sentText(viewer, members, db) {
+  const who = (id) => esc(members.find((x) => x.id === id)?.name || id);
+  const mine = db.missions.filter((m) => m.createdBy === viewer.id && m.assignee !== viewer.id).sort((a, b) => b.id.localeCompare(a.id));
+  const group = (status) => mine.filter((m) => m.status === status);
+  const lines = ['📤 <b>보낸 미션</b>', ''];
+  if (!mine.length) return [...lines, '아직 다른 사람에게 준·요청한 미션이 없어요. 이름봇 → 📨 버튼으로 보내 보세요.'].join('\n');
+  const block = (title, list, max = 10) => {
+    if (!list.length) return;
+    lines.push(`<b>${title} ${list.length}</b>`, ...list.slice(0, max).map((m) => `• ${who(m.assignee)} — ${esc(clip(m.title, 80))}`));
+    if (list.length > max) lines.push(`… 외 ${list.length - max}개`);
+    lines.push('');
+  };
+  block('⏳ 수락 기다리는 요청', group('requested'));
+  block('🔨 진행 중', group('todo'));
+  block('✅ 완료', group('done'), 5);
+  block('❌ 거절됨', group('declined'), 5);
+  return lines.join('\n').trimEnd();
+}
+
+// 요청 알림(받는 관리자에게, 수락/거절 버튼과 함께)
+export function requestNotice(requester, added) {
+  return {
+    text: ['📨 <b>미션 요청이 왔어요</b>', '', `${esc(requester.name)}님이 보냈어요:`, ...added.slice(0, 5).map((m, i) => `${i + 1}. ${esc(clip(m.title, 150))}${m.detail ? `\n<blockquote expandable>${esc(clip(m.detail, 400))}</blockquote>` : ''}`),
+      ...(added.length > 5 ? [`… 외 ${added.length - 5}개(내 이름봇에서 보여요)`] : []), '', `수락하면 내 미션에 들어가고, ${esc(requester.name)}님에게 결과를 알려 드려요.`].join('\n'),
+    reply_markup: { inline_keyboard: added.slice(0, 5).map((m, i) => [{ text: `✅ ${i + 1} 수락`, callback_data: `a:${m.id}` }, { text: `❌ ${i + 1} 거절`, callback_data: `n:${m.id}` }]) },
+  };
+}
+
+// 요청 결과 알림(요청한 사람에게)
+export function respondNotice(mission, accept, actor, assignee) {
+  const n = esc(assignee.name);
+  const by = actor.id !== assignee.id ? ` (${esc(actor.name)}님이 처리)` : '';
+  return accept ? `✅ <b>${n}님이 미션 요청을 수락했어요</b>${by}\n• ${esc(clip(mission.title, 150))}\n\n이제 ${n}님의 미션이에요. 끝나면 완료 알림이 와요.`
+    : `❌ <b>${n}님이 미션 요청을 거절했어요</b>${by}\n• ${esc(clip(mission.title, 150))}`;
+}
+
+// 인라인 버튼(callback_data) 하나를 어떻게 처리할지(순수 함수). viewer: 누른 사람(연결된 팀원, 없으면 null)
+//   v:<팀원> 보기·새로고침 · s:<팀원> 미션 주기/요청 시작 · c:<미션> 완료(확인 받음) · a:/n:<미션> 요청 수락/거절 · g:/x:<키> 확인/취소
+export function decideCallback(data, { viewer, members, db }) {
+  const m = String(data || '').match(/^([a-z]):([\w-]{1,40})$/);
+  if (!m) return { kind: 'stale', text: '알 수 없는 버튼이에요.' };
+  const [, act, arg] = m;
+  if (act === 'g' || act === 'x') return { kind: 'pending', confirm: act === 'g', key: arg };
+  if (!viewer) return { kind: 'stale', text: '먼저 관리자에게 받은 본인 연결 링크로 연결해 주세요.' };
+  if (act === 'v' || act === 's') {
+    const member = members.find((x) => x.id === arg);
+    if (!member) return { kind: 'stale', text: '명부에 없는 팀원이에요.' };
+    if (act === 'v') return { kind: 'board', member };
+    const mode = sendMode(viewer, member);
+    return mode ? { kind: 'compose', target: member, mode } : { kind: 'stale', text: sendDeniedText(viewer, member, members).replace(/<[^>]+>/g, '') };
+  }
+  const mission = db.missions.find((x) => x.id === arg);
+  const target = mission && members.find((x) => x.id === mission.assignee);
+  if (!mission || !target) return { kind: 'stale', text: '없는 미션이에요.' };
+  if (act === 'c') {
+    if (mission.status !== 'todo') return { kind: 'stale', text: '이미 완료됐거나 바뀐 미션이에요. 🔄 새로고침해 보세요.' };
+    if (mission.assignee !== viewer.id && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: '본인 미션만 완료할 수 있어요.' };
+    return { kind: 'confirm-done', target, picked: [{ id: mission.id, title: mission.title }] };
+  }
+  if (act === 'a' || act === 'n') {
+    if (mission.status !== 'requested') return { kind: 'stale', text: '이미 처리한 요청이에요.' };
+    if (act === 'a' && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: '요청 수락은 관리자만 할 수 있어요.' };
+    if (act === 'n' && viewer.id !== mission.assignee && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: '받은 사람이나 관리자만 거절할 수 있어요.' };
+    return { kind: 'respond', accept: act === 'a', mission, target, requester: members.find((x) => x.id === mission.createdBy) || null };
+  }
+  return { kind: 'stale', text: '알 수 없는 버튼이에요.' };
+}
+
+// 미션 주기/요청 버튼을 누른 뒤 보내는 안내(답장 칸이 열림)
+export function composePrompt(target, mode) {
+  return {
+    text: [`📨 <b>${esc(target.name)}</b>님에게 ${mode === 'add' ? '줄 미션' : '요청할 미션'}을 적어 보내 주세요.`, '',
+      '한 줄 = 미션 하나 · 설명은 <code>1. 제목</code> 다음 줄에 들여써서', '그만두려면 <code>취소</code>'].join('\n'),
+    reply_markup: { force_reply: true, input_field_placeholder: `${target.name}님에게 보낼 미션` },
+  };
 }
 
 // .env 의 TELEGRAM_CHAT_ID_<아이디> / TELEGRAM_CHAT_IDS 로 chat id → 팀원 아이디(GitHub 를 부르기 전에 알 수 있게)
@@ -389,8 +599,19 @@ export function ownersFromEnv(env) {
   return map;
 }
 
+const MAX_ITEMS = 20; // 텔레그램에서 한 번에 주거나 요청할 수 있는 미션 수
+
+function parseItems(chatId, text) {
+  let items;
+  try { items = parseMissionList(text); } catch (e) { return { kind: 'act-error', chatId, error: e.message }; }
+  if (!items.length) return { kind: 'act-error', chatId, error: '미션 내용이 비어 있어요.' };
+  if (items.length > MAX_ITEMS) return { kind: 'act-error', chatId, error: `한 번에 ${MAX_ITEMS}개까지 보낼 수 있어요(지금 ${items.length}개).` };
+  return { items };
+}
+
 // 받은 메시지 하나를 어떻게 처리할지(순수 함수 — 테스트 대상). chatOwners: Map(chatId → 팀원 아이디)
-export function decide(msg, { members, chatOwners }) {
+// compose: 📨 버튼을 눌러 미션 내용을 기다리는 중이면 { target, mode } — 버튼·명령이 아닌 글은 그 사람에게 보낼 미션으로 본다.
+export function decide(msg, { members, chatOwners, compose = null }) {
   if (!msg?.chat || typeof msg.text !== 'string') return { kind: 'ignore' };
   if (msg.chat.type !== 'private') return { kind: 'ignore' }; // 단체방에서는 답하지 않는다(미션 공개 방지)
   const chatId = String(msg.chat.id);
@@ -399,16 +620,24 @@ export function decide(msg, { members, chatOwners }) {
   const start = text.match(/^\/start(?:@\w+)?(?:\s+(\S+))?$/);
   if (start?.[1]) return { kind: 'link', chatId };
   if (start || /^\/(menu|help)(@\w+)?$/.test(text) || text === '메뉴') return { kind: 'menu', chatId, owner };
+  if (compose && /^(취소|\/cancel(@\w+)?)$/.test(text)) return { kind: 'cancel', chatId };
   const byName = (n) => members.find((m) => m.name === n || m.id === String(n).toLowerCase()) || null;
+  const team = text === TEAM_BUTTON || /^(팀\s*현황|\/team(@\w+)?)$/.test(text);
+  const sent = text === SENT_BUTTON || /^(보낸\s*미션|\/sent(@\w+)?)$/.test(text);
   const me = /^\/me(@\w+)?$/.test(text) || /^내\s*미션$/.test(text);
   const btnTarget = byName(text.match(/^(\S+?)\s*봇$/)?.[1]);
-  if (me || btnTarget) {
+  if (team || sent || me || btnTarget) {
     if (!owner) return { kind: 'unlinked', chatId };
-    const target = me ? owner : btnTarget;
-    if (target.id !== owner.id) return { kind: 'deny', chatId, owner, target };
-    return { kind: 'missions', chatId, member: owner };
+    if (team || sent) return { kind: team ? 'team' : 'sent', chatId, owner };
+    return { kind: 'board', chatId, owner, member: me ? owner : btnTarget };
   }
-  // 미션 명령: "<이름>[님][에게|한테|께][,:] <내용>" — 내용이 "미션설정/미션추가/미션완료 …" 면 그 명령, 아니면 미션추가
+  if (compose && owner && !text.startsWith('/')) {
+    const mode = sendMode(owner, compose.target);
+    if (!mode) return { kind: 'act-denied', chatId, owner, action: 'add', text: sendDeniedText(owner, compose.target, members) };
+    const p = parseItems(chatId, text);
+    return p.items ? { kind: 'act', action: mode, chatId, owner, target: compose.target, items: p.items } : p;
+  }
+  // 미션 명령: "<이름>[님][에게|한테|께][,:] <내용>" — 내용이 "미션설정/미션추가/미션완료 …" 면 그 명령, 아니면 미션 주기(팀원은 관리자에게 요청)
   const m = text.match(/^(\S+?)(?:님)?(?:에게|한테|께)?(?:[ \t]*[:,]?[ \t]+|[ \t]*[:,]?[ \t]*\n)([\s\S]+)$/);
   const target = m && byName(m[1]);
   if (!target) return { kind: 'menu', chatId, owner };
@@ -420,22 +649,43 @@ export function decide(msg, { members, chatOwners }) {
   if (action === 'done') {
     const refs = rest.split(/[\s,]+/).filter(Boolean);
     if (!refs.length) return { kind: 'act-error', chatId, error: `완료할 번호를 적어 주세요. 예: ${target.name} 미션완료 2` };
-    if (target.id !== owner.id && !admin) return { kind: 'act-denied', chatId, owner, action };
+    if (target.id !== owner.id && !admin) return { kind: 'act-denied', chatId, owner, action, text: '다른 사람의 미션 완료는 관리자만 할 수 있어요. 본인 미션만 완료하세요.' };
     return { kind: 'act', action, chatId, owner, target, refs };
   }
-  if (!admin) return { kind: 'act-denied', chatId, owner, action };
-  let items;
-  try { items = parseMissionList(rest); } catch (e) { return { kind: 'act-error', chatId, error: e.message }; }
-  if (!items.length) return { kind: 'act-error', chatId, error: '미션 내용이 비어 있어요.' };
-  return { kind: 'act', action, chatId, owner, target, items };
+  if (action === 'set' && !admin) return { kind: 'act-denied', chatId, owner, action, text: `미션 바꾸기(미션설정)는 관리자(${esc(adminNames(members))})만 할 수 있어요.` };
+  const mode = action === 'set' ? 'set' : sendMode(owner, target);
+  if (!mode) return { kind: 'act-denied', chatId, owner, action, text: sendDeniedText(owner, target, members) };
+  const p = parseItems(chatId, rest);
+  return p.items ? { kind: 'act', action: mode, chatId, owner, target, items: p.items } : p;
 }
 
 // 확인 메시지(완료는 번호를 지금 목록의 미션으로 바꿔 보여 주고, 확인 때는 그 ID 로 처리)
 export function confirmText(d, picked = []) {
   const n = `<b>${esc(d.target.name)}</b>님`;
   if (d.action === 'done') return [`☑️ ${n}의 미션을 완료할까요?`, ...picked.map((x) => `• [${x.id}] ${esc(x.title)}`)].join('\n');
-  const head = d.action === 'set' ? `♻️ ${n}의 남은 미션을 이 목록으로 바꿀까요? (지금 남은 미션은 지우지 않고 보관)` : `📝 ${n}에게 이 미션을 줄까요?`;
+  const head = d.action === 'set' ? `♻️ ${n}의 남은 미션을 이 목록으로 바꿀까요? (지금 남은 미션은 지우지 않고 보관)`
+    : d.action === 'request' ? `📨 ${n}에게 이 미션을 요청할까요? (${esc(d.target.name)}님이 수락하면 미션이 돼요)` : `📝 ${n}에게 이 미션을 줄까요?`;
   return [head, ...d.items.slice(0, 10).map((it) => `• ${esc(it.title)}`), ...(d.items.length > 10 ? [`… 외 ${d.items.length - 10}개`] : [])].join('\n');
+}
+
+// 확인(✅)을 누른 뒤 저장할 내용 — 봇(bot.mjs)과 봇 서버(worker)가 같이 쓴다
+export const ACTIONS = {
+  add: { label: '미션추가', apply: (p) => (db, ms, actor) => addMissions(db, p.targetId, p.items, actor.id, ms) },
+  request: { label: '미션요청', apply: (p) => (db, ms, actor) => requestMissions(db, p.targetId, p.items, actor.id, ms) },
+  set: { label: '미션설정', apply: (p) => (db, ms, actor) => setMissions(db, p.targetId, p.items, actor.id, ms) },
+  done: { label: '미션완료', apply: (p) => (db, ms, actor) => ({ done: completeMissions(db, p.targetId, p.ids, { by: actor.id, members: ms }), changed: true }) },
+};
+
+// 저장 결과 문구(확인 메시지를 이 문구로 바꾼다)
+export function resultText(action, targetName, w) {
+  const n = esc(targetName);
+  const r = w.result;
+  if (w.unchanged) return `변경 없음 — ${n}님에게 이미 그대로 있어요.`;
+  const out = action === 'done' ? [`☑️ ${n}님의 미션을 완료했어요`, ...r.done.map((m) => `• [${m.id}] ${esc(m.title)}`)]
+    : action === 'set' ? [`♻️ ${n}님의 미션을 바꿨어요 — 새 ${r.added.length} · 유지 ${r.kept.length} · 보관 ${r.replaced.length}`]
+      : [action === 'request' ? `📨 ${n}님에게 미션을 요청했어요` : `✅ ${n}님에게 미션을 줬어요`, ...r.added.map((m) => `• [${m.id}] ${esc(m.title)}`), ...(r.skipped.length ? [`(이미 있어서 건너뜀: ${r.skipped.map(esc).join(', ')})`] : [])];
+  out.push('', action === 'request' ? `${n}님이 수락하거나 거절하면 알려 드려요.` : action === 'done' ? '곧 텔레그램 알림이 가요(미션을 준 사람에게는 완료 알림).' : `${n}님에게 곧 텔레그램 알림이 가요.`);
+  return out.join('\n');
 }
 
 export function resolveRefs(db, memberId, refs) {
@@ -450,7 +700,9 @@ export function resolveRefs(db, memberId, refs) {
 
 // GitHub main 의 최신 미션 DB 에 apply 를 적용해 저장한다. 충돌(그사이 누가 바꿈)이면 최신본으로 다시(최대 3번).
 // as: 코어 오브 미믹노트 봇이 텔레그램 연결(일회용 코드)로 확인한 팀원 아이디 — 이때는 gh 계정은 저장만 하고, 권한은 그 팀원 역할로 본다.
-export async function mutate(github, apply, describe, { as = null, via = null } = {}) {
+// trusted: 봇이 이번 실행에서 직접 저장한 내용(`명부 blob:미션 blob`) Set — main 이 그 내용이면 Actions 확인 전이라도 이어서 저장한다
+//   (봇의 저장은 확인된 상태(또는 이전 봇 저장) 위에서만 하므로 그 내용도 확인된 것과 같다. 남의 변경이 섞이면 내용이 달라져 해당 없음).
+export async function mutate(github, apply, describe, { as = null, via = null, trusted = null } = {}) {
   const login = await github.whoami();
   const access = await github.access();
   if (!access.push) {
@@ -469,10 +721,12 @@ export async function mutate(github, apply, describe, { as = null, via = null } 
       // main 에 확인 안 된 변경이 있으면 저장하지 않는다 — 그 변경을 이 계정의 저장으로 "승인"해 버리지 않게.
       const saver = memberByGithub(login, members);
       if (!access.admin && !ADMIN_ROLES.has(saver?.role)) throw new Error(`봇이 저장에 쓰는 GitHub 계정(${login})은 저장소 관리자이거나 관리자 팀원이어야 합니다.`);
-      const v = await github.verifiedSha();
-      if (!v) throw new Error('GitHub Actions 의 확인 상태를 알 수 없어 저장을 멈췄어요. 잠시 뒤 다시 해 주세요.');
-      if ((await github.readFile(MEMBERS_FILE, v)).sha !== mf.sha || (await github.readFile(DB_FILE, v)).sha !== sha) {
-        throw new Error('main 에 아직 확인되지 않은 변경이 있어 저장을 멈췄어요(방금 저장한 내용을 처리 중이거나 관리자 확인이 필요). 잠시 뒤 다시 해 주세요.');
+      if (!trusted?.has(`${mf.sha}:${sha}`)) {
+        const v = await github.verifiedSha();
+        if (!v) throw new Error('GitHub Actions 의 확인 상태를 알 수 없어 저장을 멈췄어요. 잠시 뒤 다시 해 주세요.');
+        if ((await github.readFile(MEMBERS_FILE, v)).sha !== mf.sha || (await github.readFile(DB_FILE, v)).sha !== sha) {
+          throw new Error('main 에 아직 확인되지 않은 변경이 있어 저장을 멈췄어요(다른 곳에서 방금 저장한 내용을 처리 중이거나 관리자 확인이 필요). 1분쯤 뒤 다시 해 주세요.');
+        }
       }
     }
     const actor = as ? members.find((m) => m.id === as) || null : memberByGithub(login, members);
@@ -485,9 +739,10 @@ export async function mutate(github, apply, describe, { as = null, via = null } 
     const errs = validateDb(db, members);
     if (errs.length) throw new Error(`저장하지 않았습니다(검사 실패): ${errs.join(' · ')}`);
     const save = github.commitFile ? (body, msg) => github.commitFile(head, DB_FILE, body, msg) : (body, msg) => github.writeFile(DB_FILE, body, sha, msg);
-    const w = await save(`${JSON.stringify(db, null, 2)}\n`, `미믹노트: ${describe(result, actor)} (by ${actor.name}·${via ? `${via}, ${login} 계정으로 저장` : login})`);
+    const body = `${JSON.stringify(db, null, 2)}\n`;
+    const w = await save(body, `미믹노트: ${describe(result, actor)} (by ${actor.name}·${via ? `${via}, ${login} 계정으로 저장` : login})`);
     if (w.conflict) continue;
-    return { ...w, result, db, members, actor, attempt };
+    return { ...w, result, db, members, actor, attempt, membersSha: mf.sha, body };
   }
   throw new Error('다른 사람이 동시에 미션을 바꾸고 있어 3번 모두 충돌했습니다. 잠시 뒤 다시 시도하세요(강제로 덮어쓰지 않았습니다).');
 }
