@@ -382,10 +382,11 @@
       "order": 8,
       "title": "미션",
       "detail": "",
-      "status": "todo",
+      "status": "done",
       "createdBy": "minho",
       "createdAt": "2026-11-13T10:18:31.286Z",
-      "doneAt": null
+      "doneAt": "2026-11-13T12:21:42.057Z",
+      "doneBy": "yuri"
     },
     {
       "id": "M-0034",
