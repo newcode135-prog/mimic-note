@@ -53,10 +53,16 @@ export function renderTelegram(member, db, { justDone = [] } = {}) {
 }
 
 // 미션을 준 사람(createdBy)에게 가는 완료 알림. 진행률은 보내는 시점의 확인된 상태 기준.
-export function renderDoneNotice(assignee, titles, db) {
+// items: [{ title, doneBy }] (문자열도 됨). 담당자가 아닌 사람이 완료 처리했으면 그 사람을 적는다.
+export function renderDoneNotice(assignee, items, db, members = []) {
   const open = openMissions(db, assignee.id).length;
   const done = doneMissions(db, assignee.id).length;
-  return ['✅ <b>MIMIC NOTE 완료 알림</b>', '', `👤 ${esc(assignee.name)}님이 미션을 완료했어요`, ...titles.slice(0, 10).map((t) => `• ${esc(clip(t, 120))}`), '',
+  const line = (it) => {
+    const { title, doneBy } = typeof it === 'string' ? { title: it } : it;
+    const by = doneBy && doneBy !== assignee.id ? members.find((x) => x.id === doneBy)?.name || doneBy : null;
+    return `• ${esc(clip(title, 120))}${by ? ` (${esc(by)}님이 완료 처리)` : ''}`;
+  };
+  return ['✅ <b>MIMIC NOTE 완료 알림</b>', '', `👤 ${esc(assignee.name)}님이 미션을 완료했어요`, ...items.slice(0, 10).map(line), '',
     `📊 ${esc(assignee.name)}님 진행률 ${done}/${open + done} · 남은 미션 ${open}개`].join('\n');
 }
 
@@ -121,7 +127,7 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
   const problems = [];
   const covered = [];
   const candidates = new Set();
-  const completed = []; // 확인된 변경에서 todo → done 이 된 미션
+  const completed = new Map(); // 확인된 변경에서 todo → done 이 된 미션(id → 미션, 같은 미션은 한 번)
   const head = git.head();
   const event = env.EVENT_NAME || 'workflow_dispatch';
   const owner = (env.GITHUB_REPOSITORY_OWNER || '').toLowerCase();
@@ -178,7 +184,7 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
       if (v.length) { report({ kind: 'unauthorized', sha: c, actor, detail: v }); continue; }
       changedMembers(base.db, next.db, next.members).forEach((id) => candidates.add(id));
       const was = new Map(base.db.missions.map((m) => [m.id, m]));
-      for (const m of next.db.missions) if (was.get(m.id)?.status === 'todo' && m.status === 'done') completed.push(m);
+      for (const m of next.db.missions) if (was.get(m.id)?.status === 'todo' && m.status === 'done') completed.set(m.id, m);
       verified = c;
       base = next;
     }
@@ -201,16 +207,19 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
     }
   }
 
+  // 보내는 순간 확인된 상태에서도 아직 '완료'인 미션만 알린다(그사이 되돌려졌으면 알리지 않음)
+  const stillDone = (id) => cur.db.missions.find((x) => x.id === id)?.status === 'done';
+  const titleOf = (id, fallback) => cur.db.missions.find((x) => x.id === id)?.title || fallback;
   const justDone = new Map();
-  for (const m of completed) justDone.set(m.assignee, [...(justDone.get(m.assignee) || []), m.title]);
+  for (const m of completed.values()) justDone.set(m.assignee, [...(justDone.get(m.assignee) || []), { id: m.id, title: m.title }]);
   const fresh = new Map();
-  for (const m of completed) {
+  for (const m of completed.values()) {
     const to = cur.members.find((x) => x.id === m.createdBy);
-    if (!to || to.id === (m.doneBy || m.assignee)) continue; // 스스로 만든·스스로 끝낸 미션은 알림 없음
+    // 담당자 본인이 만든 미션(목록의 "방금 완료"로 충분)·스스로 끝낸 미션은 따로 알리지 않는다
+    if (!to || to.id === m.assignee || to.id === m.doneBy) continue;
     const k = `${to.id}:${m.assignee}`;
-    const n = fresh.get(k) || { to: to.id, assignee: m.assignee, titles: [], keys: [] };
-    n.titles.push(m.title);
-    n.keys.push(`${m.id}@${m.doneAt}`);
+    const n = fresh.get(k) || { to: to.id, assignee: m.assignee, items: [] };
+    n.items.push({ id: m.id, title: m.title, doneBy: m.doneBy || null });
     fresh.set(k, n);
   }
   const notices = [...(ledger.notices || []), ...fresh.values()];
@@ -225,8 +234,11 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
       // 중복 판단은 "상태"만으로(방금 완료 줄은 빼고) — 나중 체크인이 같은 목록을 다시 보내지 않게
       const plain = renderTelegram(member, cur.db);
       const hash = hashText(plain);
-      const jd = [...new Set([...(st.justDone || []), ...(justDone.get(id) || [])])].slice(-5);
-      const text = jd.length ? renderTelegram(member, cur.db, { justDone: jd }) : plain;
+      const jdMap = new Map();
+      for (const x of [...(st.justDone || []), ...(justDone.get(id) || [])]) if (x?.id && stillDone(x.id)) jdMap.set(x.id, { id: x.id, title: titleOf(x.id, x.title) });
+      const jd = [...jdMap.values()].slice(-5);
+      let text = jd.length ? renderTelegram(member, cur.db, { justDone: jd.map((x) => x.title) }) : plain;
+      if (text.replace(/<[^>]+>/g, '').length > 4000) text = plain; // 텔레그램 4096자 제한 — "방금 완료" 줄 때문에 막히지 않게
       if (st.sentHash === hash && forced !== id) {
         st.pending = false;
         delete st.justDone;
@@ -241,7 +253,14 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
         continue;
       }
       try {
-        const r = await send(token, chatId, text);
+        let r;
+        try {
+          r = await send(token, chatId, text);
+        } catch (e) {
+          // "방금 완료" 줄이 붙은 메시지가 4xx(429 제외)로 거절되면 기본 목록으로 한 번 더 — 그 줄 때문에 계속 막히지 않게
+          if (text === plain || typeof e.code !== 'number' || e.code < 400 || e.code >= 500 || e.code === 429) throw e;
+          r = await send(token, chatId, plain);
+        }
         if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
         Object.assign(st, { sentHash: hash, sentAt: now(), messageId: r.message_id, pending: false, lastError: null });
         delete st.justDone;
@@ -261,16 +280,17 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
     for (const n of notices) {
       const to = cur.members.find((x) => x.id === n.to);
       const who = cur.members.find((x) => x.id === n.assignee);
-      if (!to || !who) continue;
+      const items = (n.items || []).filter((x) => x?.id && stillDone(x.id)).map((x) => ({ ...x, title: titleOf(x.id, x.title) }));
+      if (!to || !who || !items.length) continue;
       const chatId = chatIdFor(to.id, env);
       const base = { member: to.id, kind: 'done-notice', about: who.id };
       if (!token || !chatId) { results.push({ ...base, status: token ? 'unconnected' : 'unconfigured' }); continue; }
       try {
-        const r = await send(token, chatId, renderDoneNotice(who, n.titles, cur.db));
+        const r = await send(token, chatId, renderDoneNotice(who, items, cur.db, cur.members));
         if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
         results.push({ ...base, status: 'sent', messageId: r.message_id });
       } catch (e) {
-        keep.push({ ...n, tries: (n.tries || 0) + 1 });
+        keep.push({ ...n, items, tries: (n.tries || 0) + 1 });
         results.push({ ...base, status: 'failed', error: String(e.message).slice(0, 200), code: e.code ?? null });
       }
     }
@@ -365,10 +385,14 @@ async function main() {
     console.log(`MIMIC_PROBLEM ${JSON.stringify({ kind: p.kind, sha: p.sha, actor: p.actor, known: p.known, detail: p.detail })}`);
     console.log(`::${p.known ? 'warning' : 'error'} title=미믹노트 ${p.kind}${p.known ? '(아직 해결 안 됨)' : ''}::${[p.sha && `커밋 ${p.sha.slice(0, 7)}`, p.actor, ...(p.detail || [])].filter(Boolean).join(' / ')}`);
   }
-  for (const x of r.results.filter((y) => y.status === 'unconfigured' || y.status === 'unconnected')) console.log(`::warning title=미믹노트::${x.member}: ${LABEL[x.status]} — 보류해 두었다가 연결되면 보냅니다`);
+  for (const x of r.results.filter((y) => y.status === 'unconfigured' || y.status === 'unconnected')) {
+    console.log(x.kind === 'done-notice'
+      ? `::warning title=미믹노트::${x.member}: 완료 알림(${x.about}) ${LABEL[x.status]} — 보내지 않고 버림`
+      : `::warning title=미믹노트::${x.member}: ${LABEL[x.status]} — 보류해 두었다가 연결되면 보냅니다`);
+  }
 
   if (env.GITHUB_STEP_SUMMARY) {
-    const rows = r.results.map((x) => `| ${x.member} | ${LABEL[x.status] || x.status} | ${x.error ? String(x.error).replace(/\|/g, '/') : ''} |`);
+    const rows = r.results.map((x) => `| ${x.member}${x.kind === 'done-notice' ? ` (완료 알림 · ${x.about})` : ''} | ${LABEL[x.status] || x.status} | ${x.error ? String(x.error).replace(/\|/g, '/') : ''} |`);
     fs.appendFileSync(env.GITHUB_STEP_SUMMARY, ['### 미믹노트 알림', '', '| 팀원 | 결과 | 비고 |', '| --- | --- | --- |', ...(rows.length ? rows : ['| - | 보낼 대상 없음 | |']), '',
       ...r.problems.map((p) => `- ❌ ${p.kind}: ${(p.detail || []).join(' / ')}`), ''].join('\n'));
   }

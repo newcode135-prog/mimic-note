@@ -847,11 +847,82 @@ test('완료 알림: 발송이 실패하면 남겨 두었다가 다음 실행에
   const r = await runNotify({ env: { ...noMinho, EVENT_NAME: 'push', BEFORE_SHA: c1, AFTER_SHA: c2, ACTOR: 'newcode135-prog' }, git, gh: ghOf({ ...runs, [c2]: 'newcode135-prog' }), send: flaky.send, ledger, now: () => T });
   assert.deepEqual(rows(r), [['minho', 'list', 'unconnected'], ['changmin', 'done-notice', 'failed']]);
   assert.equal(ledger.notices.length, 1);
-  assert.deepEqual(ledger.members.minho.justDone, ['모바일 화면 검수']);
+  assert.deepEqual(ledger.members.minho.justDone, [{ id: 'M-0003', title: '모바일 화면 검수' }]);
   const ok = fakeTelegram();
   const later = await runNotify({ env: { ...ENV, EVENT_NAME: 'schedule' }, git, gh: ghOf({}), send: ok.send, ledger, now: () => T });
   assert.deepEqual(rows(later), [['minho', 'list', 'sent'], ['changmin', 'done-notice', 'sent']]);
   assert.match(ok.sent[0].text, /✅ 방금 완료: 모바일 화면 검수/);
   assert.deepEqual(ledger.notices, []);
   assert.equal(ledger.members.minho.justDone, undefined);
+});
+
+test('완료 알림 리뷰 회귀: 완료했다가 되돌린 미션은 알리지 않고, 두 번 완료해도 한 번만 적는다', async () => {
+  const { git, c0, c1, runs, db1 } = minhoSetup();
+  const tg = fakeTelegram();
+  const ledger = newLedger(c0);
+  await runNotify({ env: pushEnv(git, c0, c1, 'darrenpual'), git, gh: ghOf(runs), send: tg.send, ledger, now: () => T });
+  const db2 = clone(db1);
+  completeMissions(db2, 'minho', ['1'], { by: 'minho', members: M }, T);
+  const c2 = git.add(files(db2));
+  const db3 = clone(db2);
+  Object.assign(db3.missions.find((m) => m.id === 'M-0001'), { status: 'todo', doneAt: null, doneBy: undefined });
+  const c3 = git.add(files(db3)); // 창민이 되돌림
+  const p = { ...runs, [c2]: 'newcode135-prog', [c3]: 'darrenpual' };
+  const reopened = await runNotify({ env: pushEnv(git, c2, c3, 'darrenpual'), git, gh: ghOf(p), send: tg.send, ledger, now: () => T });
+  assert.deepEqual(rows(reopened), [['minho', 'list', 'already-sent']], '되돌린 미션의 완료 알림·방금 완료 없음');
+  const db4 = clone(db3);
+  completeMissions(db4, 'minho', ['1'], { by: 'minho', members: M }, T);
+  const c4 = git.add(files(db4));
+  const db5 = clone(db4);
+  Object.assign(db5.missions.find((m) => m.id === 'M-0001'), { status: 'todo', doneAt: null, doneBy: undefined });
+  const c5 = git.add(files(db5));
+  const db6 = clone(db5);
+  completeMissions(db6, 'minho', ['1'], { by: 'minho', members: M }, T);
+  const c6 = git.add(files(db6));
+  const twice = await runNotify({ env: pushEnv(git, c5, c6, 'newcode135-prog'), git, gh: ghOf({ ...p, [c4]: 'newcode135-prog', [c5]: 'darrenpual', [c6]: 'newcode135-prog' }), send: tg.send, ledger, now: () => T });
+  assert.deepEqual(rows(twice), [['minho', 'list', 'sent'], ['changmin', 'done-notice', 'sent']]);
+  assert.equal((tg.sent.at(-1).text.match(/• 로그인 UI 개발/g) || []).length, 1);
+  assert.equal((tg.sent.at(-2).text.match(/방금 완료: 로그인 UI 개발/g) || []).length, 1);
+});
+
+test('완료 알림 리뷰 회귀: 담당자 본인이 만든 미션은 남이 완료 처리해도 따로 알리지 않고, 대신 처리한 사람은 이름을 적는다', async () => {
+  const db0 = empty();
+  const git = fakeGit([files(db0)]);
+  const c0 = git.head();
+  const db1 = clone(db0);
+  setMissions(db1, '민호', list3, 'minho', M, T); // 민호가 자기 미션을 만듦
+  setMissions(db1, '네이뜬', parseMissionList('1. N1'), 'changmin', M, T); // 창민이 네이뜬에게 줌
+  const c1 = git.add(files(db1));
+  const tg = fakeTelegram();
+  const ledger = newLedger(c0);
+  await runNotify({ env: pushEnv(git, c0, c1, 'newcode135-prog'), git, gh: ghOf({ [c1]: 'newcode135-prog' }), send: tg.send, ledger, now: () => T });
+  const db2 = clone(db1);
+  completeMissions(db2, 'minho', ['1'], { by: 'changmin', members: M }, T); // 창민이 민호 것을 완료 처리
+  completeMissions(db2, 'nathan', ['1'], { by: 'yuri', members: M }, T); // 유리가 네이뜬 것을 완료 처리
+  const c2 = git.add(files(db2));
+  const r = await runNotify({ env: pushEnv(git, c1, c2, 'darrenpual'), git, gh: ghOf({ [c1]: 'newcode135-prog', [c2]: 'darrenpual' }), send: tg.send, ledger, now: () => T });
+  assert.deepEqual(rows(r).sort(), [['changmin', 'done-notice', 'sent'], ['minho', 'list', 'sent'], ['nathan', 'list', 'sent']]);
+  const notice = tg.sent.find((s) => s.chatId === '1001').text;
+  assert.match(notice, /네이뜬님이 미션을 완료했어요\n• N1 \(유리님이 완료 처리\)/);
+  assert.ok(!tg.sent.some((s) => s.chatId === '1002' && s.text.includes('완료 알림')), '민호에게 자기 자신에 대한 완료 알림을 따로 보내지 않음');
+});
+
+test('완료 알림 리뷰 회귀: "방금 완료" 줄 때문에 거절되면 기본 목록으로 다시 보내 막히지 않는다', async () => {
+  const { git, c0, c1, runs, db1 } = minhoSetup();
+  const ledger = newLedger(c0);
+  await runNotify({ env: pushEnv(git, c0, c1, 'darrenpual'), git, gh: ghOf(runs), send: fakeTelegram().send, ledger, now: () => T });
+  const db2 = clone(db1);
+  completeMissions(db2, 'minho', ['2'], { by: 'minho', members: M }, T);
+  const c2 = git.add(files(db2));
+  const sent = [];
+  const picky = async (token, chatId, text) => {
+    if (text.includes('방금 완료')) throw Object.assign(new Error('텔레그램 sendMessage 실패: Bad Request: message is too long'), { code: 400 });
+    sent.push({ chatId, text });
+    return { message_id: 9, chat: { id: Number(chatId) } };
+  };
+  const r = await runNotify({ env: pushEnv(git, c1, c2, 'newcode135-prog'), git, gh: ghOf({ ...runs, [c2]: 'newcode135-prog' }), send: picky, ledger, now: () => T });
+  assert.deepEqual(rows(r), [['minho', 'list', 'sent'], ['changmin', 'done-notice', 'sent']]);
+  assert.match(sent.find((s) => s.chatId === '1002').text, /📊 진행률 1\/3/);
+  assert.equal(ledger.members.minho.justDone, undefined);
+  assert.equal(ledger.members.minho.pending, false);
 });
