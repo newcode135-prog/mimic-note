@@ -81,7 +81,7 @@ export function secretNames() {
   }
 }
 
-function setSecret(name, value) {
+export function setSecret(name, value) {
   try {
     execFileSync('gh', ['secret', 'set', name, '-R', REPO], { input: value, stdio: ['pipe', 'pipe', 'pipe'] });
     return true;
@@ -107,7 +107,7 @@ export async function applyLink(l, { members, codes, token, log = console.log })
   return { member: m, ok };
 }
 
-async function askHidden(prompt) {
+export async function askHidden(prompt) {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== 'function') {
     throw new Error('이 터미널에서는 입력을 숨길 수 없습니다. 메모장으로 저장소 폴더의 .env 파일에 TELEGRAM_BOT_TOKEN=<토큰> 한 줄을 넣고 다시 실행하세요(.env 는 git 에 올라가지 않음). PowerShell·명령 프롬프트·macOS 터미널에서는 숨김 입력이 됩니다.');
   }
@@ -140,6 +140,10 @@ async function askHidden(prompt) {
 async function connect(names, { relink = false, minutes = 10, wait = true } = {}) {
   const members = loadMembers();
   let env = readEnv(ROOT, process.env);
+  if (env.NOTE_RELAY_URL) { // 봇 서버(워커)를 쓰면 연결은 서버가 한다 — 여기서 만든 코드는 서버가 모름
+    console.log('봇 서버(클라우드플레어 워커)를 쓰는 중이라 연결 링크는 텔레그램 봇에서 만듭니다:\n  관리자가 봇에 "루카스 연결링크" (또는 /link 루카스) 를 보내면 24시간짜리 일회용 링크가 옵니다 → 그 사람에게만 전달.');
+    return;
+  }
   let token = env.TELEGRAM_BOT_TOKEN;
   let fresh = false;
   if (!token) {

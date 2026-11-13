@@ -20,7 +20,7 @@
 | `민호 미션완료 2` (여러 개: `2 3`) | `node mimic-note/mission.mjs done 민호 2` |
 | `민호 https://github.com/newcode135-prog/mimic-note` | 위 체크인(`node mimic-note/checkin.mjs 민호`) |
 | `미믹 전체미션` | `node mimic-note/mission.mjs all` |
-| `텔레그램 연결` | 사용자에게 **본인 터미널(PowerShell 등)에서** `node mimic-note/telegram.mjs connect` 를 실행하라고 안내(토큰을 대화에 붙여 넣게 하지 않는다) |
+| `텔레그램 연결` | 봇 서버를 쓰면: 관리자가 텔레그램 봇에 `루카스 연결링크` → 받은 링크를 그 사람에게만 전달. 서버가 없으면: 사용자가 **본인 터미널(PowerShell 등)에서** `node mimic-note/telegram.mjs connect` (토큰을 대화에 붙여 넣게 하지 않는다) |
 
 - 이 명령들은 GitHub main 에 **바로 저장**(커밋)하고, GitHub Actions 가 미션이 바뀐 팀원에게만 텔레그램을 보낸 뒤 결과를 출력한다. 따로 commit·push 하지 않는다. 출력(커밋 링크·남은 미션·텔레그램 결과)을 그대로 전한다.
 - 누가 바꾸는지는 이 컴퓨터의 `gh` 로그인 계정 ↔ `mimic-note/data/members.json` 의 `github` 로 확인한다(`--by` 는 쓰지 않음). 거절되면 그 문구를 그대로 전하고, 권한을 우회하지 않는다.
@@ -33,6 +33,7 @@
 - `mimic-note/data/auto/todos.json` 은 패시브 스킬 [자동 다운로드](`mimic-note/passive/`)만 쓴다.
 - [사고력 게임]: 체크인 ④에 마지막 게임이 나온다. 플레이어가 답하면 `node mimic-note/game.mjs <이름> answer "<답>"` → commit·push.
 - 액티브 스킬 [로그아웃]: `[로그아웃]` 이라고 하면 `node mimic-note/logout.mjs <이름>` → 최종본의 라벨·결정·다음만 고침 → `node mimic-note/logout.mjs <이름> --upload "<파일>"`.
+- 봇 서버(24시간): `node worker/setup.mjs` 를 저장소 주인이 본인 터미널에서 실행(클라우드플레어 로그인·GitHub 토큰은 본인이 입력). 서버를 쓰면 `bot.mjs` 는 끈다.
 - `코어봇 켜` → `node mimic-note/bot.mjs` 를 사용자 터미널에서 실행(한 컴퓨터에서만). 봇이 켜져 있으면 새 연결 링크는 `node mimic-note/telegram.mjs connect --no-wait`.
 - 팀원 명부·진행 기록은 `mimic-note/README.md`. 토큰·chat id 는 파일에 쓰지 않는다(공개 저장소).
 

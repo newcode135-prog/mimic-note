@@ -17,7 +17,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { NOTE_DIR, ADMIN_ROLES, loadMembers, readEnv, telegramApi, validateDb, validateMembers, parseMissionList, openMissions, addMissions, setMissions, completeMissions } from './lib.mjs';
+import { NOTE_DIR, ADMIN_ROLES, loadMembers, readEnv, telegramApi, validateDb, validateMembers, parseMissionList, openMissions, addMissions, setMissions, completeMissions , esc, BOT_NAME, menuKeyboard, menuText, missionsText, ownersFromEnv, decide, confirmText, resolveRefs } from './lib.mjs';
+
+export { BOT_NAME, menuKeyboard, menuText, missionsText, ownersFromEnv, decide, confirmText, resolveRefs };
 import { renderTelegram } from './notify.mjs';
 import { processUpdates, applyLink, loadCodes, secretNames } from './telegram.mjs';
 import { mutate } from './mission.mjs';
@@ -25,99 +27,8 @@ import { createGithub, DB_FILE, MEMBERS_FILE } from './github.mjs';
 import { HOME_DIR } from './passive/compress.mjs';
 
 const ROOT = path.resolve(NOTE_DIR, '..');
-export const BOT_NAME = '코어 오브 미믹노트';
 export const LOCK = () => path.join(HOME_DIR(), 'core-bot.lock');
-const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const PENDING_MS = 10 * 60e3;
-
-// 늘 떠 있는 버튼판: 팀원 이름 + "봇", 한 줄에 3개
-export function menuKeyboard(members) {
-  const buttons = members.map((m) => ({ text: `${m.name}봇` }));
-  const keyboard = [];
-  for (let i = 0; i < buttons.length; i += 3) keyboard.push(buttons.slice(i, i + 3));
-  return { keyboard, resize_keyboard: true, is_persistent: true };
-}
-
-export function menuText(owner) {
-  if (!owner) return ['🎯 <b>코어 오브 미믹노트</b>', '', '아래에서 본인 이름 버튼을 누르세요. 처음이면 관리자에게 받은 <b>본인 연결 링크</b>로 [시작]을 먼저 눌러 주세요.'].join('\n');
-  const lines = ['🎯 <b>코어 오브 미믹노트</b>', '', `${esc(owner.name)}님, 아래 <b>${esc(owner.name)}봇</b>을 누르면 지금 보고할 미션이 와요.`, `끝내면 <code>${esc(owner.name)} 미션완료 1</code> 처럼 보내세요.`];
-  if (ADMIN_ROLES.has(owner.role)) lines.push('', '미션 주기: <code>창민 이거 결제해줘</code> · 바꾸기: <code>창민 미션설정</code> + 줄마다 <code>1. …</code>');
-  return lines.join('\n');
-}
-
-export function missionsText(member, db) {
-  return `${renderTelegram(member, db)}\n\n끝낸 미션은 여기에 <code>${esc(member.name)} 미션완료 1</code> 처럼 보내면 돼요.`;
-}
-
-// .env 의 TELEGRAM_CHAT_ID_<아이디> / TELEGRAM_CHAT_IDS 로 chat id → 팀원 아이디(GitHub 를 부르기 전에 알 수 있게)
-export function ownersFromEnv(env) {
-  const map = new Map();
-  try { for (const [id, chat] of Object.entries(JSON.parse(env.TELEGRAM_CHAT_IDS || '{}'))) if (chat) map.set(String(chat), id); } catch { /* 형식이 틀리면 무시 */ }
-  for (const [k, v] of Object.entries(env)) {
-    const m = k.match(/^TELEGRAM_CHAT_ID_([A-Z0-9_]+)$/);
-    if (m && v) map.set(String(v), m[1].toLowerCase());
-  }
-  return map;
-}
-
-// 받은 메시지 하나를 어떻게 처리할지(순수 함수 — 테스트 대상). chatOwners: Map(chatId → 팀원 아이디)
-export function decide(msg, { members, chatOwners }) {
-  if (!msg?.chat || typeof msg.text !== 'string') return { kind: 'ignore' };
-  if (msg.chat.type !== 'private') return { kind: 'ignore' }; // 단체방에서는 답하지 않는다(미션 공개 방지)
-  const chatId = String(msg.chat.id);
-  const owner = members.find((m) => m.id === chatOwners.get(chatId)) || null;
-  const text = msg.text.trim();
-  const start = text.match(/^\/start(?:@\w+)?(?:\s+(\S+))?$/);
-  if (start?.[1]) return { kind: 'link', chatId };
-  if (start || /^\/(menu|help)(@\w+)?$/.test(text) || text === '메뉴') return { kind: 'menu', chatId, owner };
-  const byName = (n) => members.find((m) => m.name === n || m.id === String(n).toLowerCase()) || null;
-  const me = /^\/me(@\w+)?$/.test(text) || /^내\s*미션$/.test(text);
-  const btnTarget = byName(text.match(/^(\S+?)\s*봇$/)?.[1]);
-  if (me || btnTarget) {
-    if (!owner) return { kind: 'unlinked', chatId };
-    const target = me ? owner : btnTarget;
-    if (target.id !== owner.id) return { kind: 'deny', chatId, owner, target };
-    return { kind: 'missions', chatId, member: owner };
-  }
-  // 미션 명령: "<이름>[님][에게|한테|께][,:] <내용>" — 내용이 "미션설정/미션추가/미션완료 …" 면 그 명령, 아니면 미션추가
-  const m = text.match(/^(\S+?)(?:님)?(?:에게|한테|께)?(?:[ \t]*[:,]?[ \t]+|[ \t]*[:,]?[ \t]*\n)([\s\S]+)$/);
-  const target = m && byName(m[1]);
-  if (!target) return { kind: 'menu', chatId, owner };
-  if (!owner) return { kind: 'unlinked', chatId };
-  const kw = m[2].match(/^미션\s*(설정|추가|완료)\s*([\s\S]*)$/);
-  const action = kw ? { 설정: 'set', 추가: 'add', 완료: 'done' }[kw[1]] : 'add';
-  const rest = kw ? kw[2] : m[2];
-  const admin = ADMIN_ROLES.has(owner.role);
-  if (action === 'done') {
-    const refs = rest.split(/[\s,]+/).filter(Boolean);
-    if (!refs.length) return { kind: 'act-error', chatId, error: `완료할 번호를 적어 주세요. 예: ${target.name} 미션완료 2` };
-    if (target.id !== owner.id && !admin) return { kind: 'act-denied', chatId, owner, action };
-    return { kind: 'act', action, chatId, owner, target, refs };
-  }
-  if (!admin) return { kind: 'act-denied', chatId, owner, action };
-  let items;
-  try { items = parseMissionList(rest); } catch (e) { return { kind: 'act-error', chatId, error: e.message }; }
-  if (!items.length) return { kind: 'act-error', chatId, error: '미션 내용이 비어 있어요.' };
-  return { kind: 'act', action, chatId, owner, target, items };
-}
-
-// 확인 메시지(완료는 번호를 지금 목록의 미션으로 바꿔 보여 주고, 확인 때는 그 ID 로 처리)
-export function confirmText(d, picked = []) {
-  const n = `<b>${esc(d.target.name)}</b>님`;
-  if (d.action === 'done') return [`☑️ ${n}의 미션을 완료할까요?`, ...picked.map((x) => `• [${x.id}] ${esc(x.title)}`)].join('\n');
-  const head = d.action === 'set' ? `♻️ ${n}의 남은 미션을 이 목록으로 바꿀까요? (지금 남은 미션은 지우지 않고 보관)` : `📝 ${n}에게 이 미션을 줄까요?`;
-  return [head, ...d.items.slice(0, 10).map((it) => `• ${esc(it.title)}`), ...(d.items.length > 10 ? [`… 외 ${d.items.length - 10}개`] : [])].join('\n');
-}
-
-export function resolveRefs(db, memberId, refs) {
-  const open = openMissions(db, memberId);
-  return refs.map((r) => {
-    const key = String(r).trim().toUpperCase();
-    const m = /^\d+$/.test(key) ? open[Number(key) - 1] : open.find((x) => x.id === key);
-    if (!m) throw new Error(`미션을 찾지 못했어요: ${r} (남은 미션 번호: ${open.map((x, i) => i + 1).join(', ') || '없음'})`);
-    return { id: m.id, title: m.title };
-  });
-}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };

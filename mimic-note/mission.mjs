@@ -23,10 +23,12 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  NOTE_DIR, REPO, ADMIN_ROLES, loadMembers, requireMember, loadDb, openMissions, doneMissions, setLowPriority,
+  NOTE_DIR, REPO, ADMIN_ROLES, mutate, loadMembers, requireMember, loadDb, openMissions, doneMissions, setLowPriority,
   parseMissionList, setMissions, addMissions, completeMissions, memberByGithub, validateDb, validateMembers,
 } from './lib.mjs';
 import { createGithub, DB_FILE, MEMBERS_FILE, waitForNotify, formatNotify } from './github.mjs';
+
+export { mutate };
 
 const ROLE = { owner: '대표관리자', admin: '관리자', member: '팀원' };
 
@@ -41,47 +43,6 @@ function listOf(member, db) {
   const open = openMissions(db, member.id);
   if (!open.length) return `${member.name}님, 지금 남은 미션이 없습니다.`;
   return [`${member.name}님의 남은 미션 (${open.length}개)`, ...open.map((m, i) => `  ${i + 1}. [${m.id}] ${m.title}${m.priority === 'low' ? ' (후순위)' : ''}`)].join('\n');
-}
-
-// GitHub main 의 최신 미션 DB 에 apply 를 적용해 저장한다. 충돌(그사이 누가 바꿈)이면 최신본으로 다시(최대 3번).
-// as: 코어 오브 미믹노트 봇이 텔레그램 연결(일회용 코드)로 확인한 팀원 아이디 — 이때는 gh 계정은 저장만 하고, 권한은 그 팀원 역할로 본다.
-export async function mutate(github, apply, describe, { as = null, via = null } = {}) {
-  const login = github.whoami();
-  const access = github.access();
-  if (!access.push) {
-    throw new Error(`GitHub 계정 ${login} 은 ${REPO} 쓰기 권한이 없어 미션을 바꿀 수 없습니다. 초대를 수락했는지 확인하거나, 권한 있는 계정으로 gh auth switch 하세요.`);
-  }
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const mf = github.readFile(MEMBERS_FILE);
-    const members = JSON.parse(mf.text).members;
-    const merr = validateMembers(members);
-    if (merr.length) throw new Error(`팀원 명부(members.json)가 올바르지 않아 멈췄습니다: ${merr.join(' · ')}`);
-    const { text, sha } = github.readFile(DB_FILE);
-    if (as) {
-      // 봇 저장: 저장하는 gh 계정이 GitHub Actions 확인을 통과할 수 있어야 하고(저장소 관리자 또는 관리자 팀원),
-      // main 에 확인 안 된 변경이 있으면 저장하지 않는다 — 그 변경을 이 계정의 저장으로 "승인"해 버리지 않게.
-      const saver = memberByGithub(login, members);
-      if (!access.admin && !ADMIN_ROLES.has(saver?.role)) throw new Error(`봇이 저장에 쓰는 GitHub 계정(${login})은 저장소 관리자이거나 관리자 팀원이어야 합니다.`);
-      const v = github.verifiedSha();
-      if (!v) throw new Error('GitHub Actions 의 확인 상태를 알 수 없어 저장을 멈췄어요. 잠시 뒤 다시 해 주세요.');
-      if (github.readFile(MEMBERS_FILE, v).sha !== mf.sha || github.readFile(DB_FILE, v).sha !== sha) {
-        throw new Error('main 에 아직 확인되지 않은 변경이 있어 저장을 멈췄어요(방금 저장한 내용을 처리 중이거나 관리자 확인이 필요). 잠시 뒤 다시 해 주세요.');
-      }
-    }
-    const actor = as ? members.find((m) => m.id === as) || null : memberByGithub(login, members);
-    if (!actor) throw new Error(as ? `명부에 없는 팀원입니다: ${as}` : `GitHub 계정 ${login} 이 팀원 명부(members.json 의 github)에 없습니다. 대표관리자에게 등록을 요청하세요.`);
-    const db = JSON.parse(text);
-    const before = validateDb(db, members);
-    if (before.length) throw new Error(`GitHub 의 미션 DB 가 올바르지 않아 멈췄습니다: ${before.join(' · ')}`);
-    const result = apply(db, members, actor);
-    if (!result.changed) return { unchanged: true, result, db, members, actor };
-    const errs = validateDb(db, members);
-    if (errs.length) throw new Error(`저장하지 않았습니다(검사 실패): ${errs.join(' · ')}`);
-    const w = github.writeFile(DB_FILE, `${JSON.stringify(db, null, 2)}\n`, sha, `미믹노트: ${describe(result, actor)} (by ${actor.name}·${via ? `${via}, ${login} 계정으로 저장` : login})`);
-    if (w.conflict) continue;
-    return { ...w, result, db, members, actor, attempt };
-  }
-  throw new Error('다른 사람이 동시에 미션을 바꾸고 있어 3번 모두 충돌했습니다. 잠시 뒤 다시 시도하세요(강제로 덮어쓰지 않았습니다).');
 }
 
 // 보기 명령은 GitHub main 의 최신 데이터(가능하면), 안 되면 이 폴더의 파일.
