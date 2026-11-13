@@ -81,7 +81,7 @@ export function secretNames() {
   }
 }
 
-function setSecret(name, value) {
+export function setSecret(name, value) {
   try {
     execFileSync('gh', ['secret', 'set', name, '-R', REPO], { input: value, stdio: ['pipe', 'pipe', 'pipe'] });
     return true;
@@ -107,7 +107,7 @@ export async function applyLink(l, { members, codes, token, log = console.log })
   return { member: m, ok };
 }
 
-async function askHidden(prompt) {
+export async function askHidden(prompt) {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== 'function') {
     throw new Error('이 터미널에서는 입력을 숨길 수 없습니다. 메모장으로 저장소 폴더의 .env 파일에 TELEGRAM_BOT_TOKEN=<토큰> 한 줄을 넣고 다시 실행하세요(.env 는 git 에 올라가지 않음). PowerShell·명령 프롬프트·macOS 터미널에서는 숨김 입력이 됩니다.');
   }

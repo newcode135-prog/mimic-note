@@ -19,58 +19,12 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ADMIN_ROLES, findMember, memberByGithub, openMissions, doneMissions, validateDb, validateMembers, chatIdFor, telegramApi } from './lib.mjs';
+import { ADMIN_ROLES, findMember, memberByGithub, openMissions, doneMissions, validateDb, validateMembers, chatIdFor, telegramApi , esc, clip, renderTelegram, renderDoneNotice } from './lib.mjs';
+
+export { renderTelegram, renderDoneNotice };
 
 export const DATA = { db: 'mimic-note/data/missions.json', members: 'mimic-note/data/members.json' };
 const WORKFLOW = 'mimic-checkin.yml';
-const KEYCAPS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
-const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-const num = (i) => KEYCAPS[i] || `${i + 1}.`;
-
-// 팀원 한 명의 텔레그램 메시지(HTML). 상위 3개는 크게, 설명과 4번부터는 눌러서 펼치기.
-// 제목·순서·진행률은 모두 DB 에서 계산한다. justDone: 이번 변경에서 끝낸 미션 제목(맨 위에 "✅ 방금 완료").
-// justAdded: 다른 사람이 새로 준 미션 [{ title, by }] (맨 위에 "🆕 새 미션: … (창민님이 줌)").
-export function renderTelegram(member, db, { justDone = [], justAdded = [] } = {}) {
-  const open = openMissions(db, member.id);
-  const done = doneMissions(db, member.id).length;
-  const lines = ['🎯 <b>MIMIC NOTE</b>', ''];
-  if (justAdded.length) {
-    lines.push(...justAdded.slice(0, 3).map((x) => `🆕 새 미션: ${esc(clip(x.title, 120))}${x.by ? ` (${esc(x.by)}님이 줌)` : ''}`));
-    if (justAdded.length > 3) lines.push(`🆕 … 외 ${justAdded.length - 3}개`);
-    lines.push('');
-  }
-  if (justDone.length) lines.push(...justDone.slice(0, 5).map((t) => `✅ 방금 완료: ${esc(clip(t, 120))}`), '');
-  lines.push(`👤 <b>${esc(member.name)}님의 미션</b>`, '');
-  if (!open.length) lines.push('🎉 남은 미션이 없어요!', '');
-  open.slice(0, 3).forEach((m, i) => {
-    lines.push(`${num(i)} ${esc(clip(m.title, 200))}${m.priority === 'low' ? ' <i>(후순위)</i>' : ''}`);
-    if (m.detail) lines.push(`<blockquote expandable>${esc(clip(m.detail, 600))}</blockquote>`);
-    lines.push('');
-  });
-  const rest = open.slice(3);
-  if (rest.length) {
-    const shown = rest.slice(0, 30).map((m, i) => `${num(i + 3)} ${esc(clip(m.title, 120))}${m.priority === 'low' ? ' (후순위)' : ''}`);
-    if (rest.length > 30) shown.push(`… 외 ${rest.length - 30}개`);
-    lines.push(`➕ 추가 미션 ${rest.length}개 (눌러서 전체 보기)`, `<blockquote expandable>${shown.join('\n')}</blockquote>`, '');
-  }
-  lines.push('━━━━━━━━━━', '', `📊 진행률 ${done}/${open.length + done}`, `📌 남은 미션 ${open.length}개`);
-  return lines.join('\n');
-}
-
-// 미션을 준 사람(createdBy)에게 가는 완료 알림. 진행률은 보내는 시점의 확인된 상태 기준.
-// items: [{ title, doneBy }] (문자열도 됨). 담당자가 아닌 사람이 완료 처리했으면 그 사람을 적는다.
-export function renderDoneNotice(assignee, items, db, members = []) {
-  const open = openMissions(db, assignee.id).length;
-  const done = doneMissions(db, assignee.id).length;
-  const line = (it) => {
-    const { title, doneBy } = typeof it === 'string' ? { title: it } : it;
-    const by = doneBy && doneBy !== assignee.id ? members.find((x) => x.id === doneBy)?.name || doneBy : null;
-    return `• ${esc(clip(title, 120))}${by ? ` (${esc(by)}님이 완료 처리)` : ''}`;
-  };
-  return ['✅ <b>MIMIC NOTE 완료 알림</b>', '', `👤 ${esc(assignee.name)}님이 미션을 완료했어요`, ...items.slice(0, 10).map(line), '',
-    `📊 ${esc(assignee.name)}님 진행률 ${done}/${open + done} · 남은 미션 ${open}개`].join('\n');
-}
 
 export const hashText = (t) => crypto.createHash('sha256').update(t).digest('hex').slice(0, 16);
 
@@ -128,7 +82,9 @@ export function loadLedger(file) {
 
 // deps: git(아래 makeGit 과 같은 모양), gh{pushes() → Map(push 후 커밋 → 계정), isRepoAdmin(login)},
 //       send(token, chatId, text) → sendMessage 결과, ledger(loadLedger)
-export async function runNotify({ env, git, gh, send, ledger, now = () => new Date().toISOString() }) {
+// relay(memberId, text) → { status: 'sent'|'unconnected'|'unconfigured', messageId } (실패는 throw, err.code):
+//   클라우드플레어 봇 서버(워커)를 거쳐 보내는 방식. 없으면 텔레그램에 직접(TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID_*).
+export async function runNotify({ env, git, gh, send, relay = null, ledger, now = () => new Date().toISOString() }) {
   const results = [];
   const problems = [];
   const covered = [];
@@ -237,8 +193,16 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
   }
   const notices = [...(ledger.notices || []), ...fresh.values()];
 
-  // 3) 발송
+  // 3) 발송 — 팀원 아이디로 보낸다(워커를 거치거나, 직접이면 chat id 를 찾아 응답까지 확인)
   const token = env.TELEGRAM_BOT_TOKEN;
+  const deliver = relay || (async (memberId, text) => {
+    if (!token) return { status: 'unconfigured' };
+    const chatId = chatIdFor(memberId, env);
+    if (!chatId) return { status: 'unconnected' };
+    const r = await send(token, chatId, text);
+    if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
+    return { status: 'sent', messageId: r.message_id };
+  });
   if (!halted && !curBad.length) {
     for (const id of candidates) {
       const member = cur.members.find((m) => m.id === id);
@@ -263,28 +227,26 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
         results.push({ member: id, status: 'already-sent' });
         continue;
       }
-      const chatId = chatIdFor(id, env);
-      if (!token || !chatId) {
-        st.pending = true;
-        if (jd.length) st.justDone = jd;
-        if (ja.length) st.justAdded = ja;
-        results.push({ member: id, status: token ? 'unconnected' : 'unconfigured' });
-        continue;
-      }
       try {
         let r;
         try {
-          r = await send(token, chatId, text);
+          r = await deliver(id, text);
         } catch (e) {
           // "방금 완료" 줄이 붙은 메시지가 4xx(429 제외)로 거절되면 기본 목록으로 한 번 더 — 그 줄 때문에 계속 막히지 않게
           if (text === plain || typeof e.code !== 'number' || e.code < 400 || e.code >= 500 || e.code === 429) throw e;
-          r = await send(token, chatId, plain);
+          r = await deliver(id, plain);
         }
-        if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
-        Object.assign(st, { sentHash: hash, sentAt: now(), messageId: r.message_id, pending: false, lastError: null });
+        if (r.status !== 'sent') {
+          st.pending = true;
+          if (jd.length) st.justDone = jd;
+          if (ja.length) st.justAdded = ja;
+          results.push({ member: id, status: r.status });
+          continue;
+        }
+        Object.assign(st, { sentHash: hash, sentAt: now(), messageId: r.messageId, pending: false, lastError: null });
         delete st.justDone;
         delete st.justAdded;
-        results.push({ member: id, status: 'sent', messageId: r.message_id });
+        results.push({ member: id, status: 'sent', messageId: r.messageId });
       } catch (e) {
         Object.assign(st, { pending: true, lastError: String(e.message).slice(0, 200) });
         if (jd.length) st.justDone = jd;
@@ -303,13 +265,10 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
       const who = cur.members.find((x) => x.id === n.assignee);
       const items = (n.items || []).filter((x) => x?.id && stillDone(x.id)).map((x) => ({ ...x, title: titleOf(x.id, x.title) }));
       if (!to || !who || !items.length) continue;
-      const chatId = chatIdFor(to.id, env);
       const base = { member: to.id, kind: 'done-notice', about: who.id };
-      if (!token || !chatId) { results.push({ ...base, status: token ? 'unconnected' : 'unconfigured' }); continue; }
       try {
-        const r = await send(token, chatId, renderDoneNotice(who, items, cur.db, cur.members));
-        if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
-        results.push({ ...base, status: 'sent', messageId: r.message_id });
+        const r = await deliver(to.id, renderDoneNotice(who, items, cur.db, cur.members));
+        results.push(r.status === 'sent' ? { ...base, status: 'sent', messageId: r.messageId } : { ...base, status: r.status });
       } catch (e) {
         keep.push({ ...n, items, tries: (n.tries || 0) + 1 });
         results.push({ ...base, status: 'failed', error: String(e.message).slice(0, 200), code: e.code ?? null });
@@ -321,13 +280,12 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
   // 4) 새 문제(권한 없음·깨진 데이터·기록 다시 쓰기) → 대표관리자에게 경고(같은 커밋은 한 번만)
   // 경고 받을 대표관리자는 확인된 명부 기준(멈춘 실행은 지난번에 확인된 대표관리자) — 다시 쓰인 명부를 믿지 않는다
   const ownerMember = halted ? (ledger.owner ? { id: ledger.owner } : null) : cur.members.find((m) => m.role === 'owner');
-  const ownerChat = ownerMember && chatIdFor(ownerMember.id, env);
   for (const p of problems.filter((x) => x.sha && !x.known && !ledger.alerts.includes(x.sha))) {
-    if (!token || !ownerChat) continue;
+    if (!ownerMember) continue;
     const what = { unauthorized: '권한 없는 미션 변경', schema: '깨진 미션 데이터', 'history-rewrite': 'main 기록 다시 쓰기(force push)' }[p.kind] || p.kind;
     const text = ['⚠️ <b>MIMIC NOTE 경고</b>', '', `${what}을(를) 감지해 그 내용은 팀원에게 보내지 않았어요.`, ...(p.detail || []).slice(0, 8).map((d) => `• ${esc(d)}`), '', `커밋 ${p.sha.slice(0, 7)}${p.actor ? ` · ${esc(p.actor)}` : ''}`].join('\n');
     try {
-      await send(token, ownerChat, text);
+      if ((await deliver(ownerMember.id, text)).status !== 'sent') continue; // 대표관리자 미연결이면 다음 기회에
       ledger.alerts = [...ledger.alerts, p.sha].slice(-50);
       results.push({ member: ownerMember.id, status: 'alert' });
     } catch (e) {
@@ -396,7 +354,23 @@ async function main() {
   git.fetch();
   const ledger = loadLedger(ledgerFile);
   const before = JSON.stringify(ledger);
-  const r = await runNotify({ env, git, gh: makeGh(env), send: (token, chatId, text) => telegramApi(token, 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } }), ledger });
+  const relayUrl = env.NOTE_RELAY_URL && env.NOTE_RELAY_SECRET ? env.NOTE_RELAY_URL.replace(/\/+$/, '') : null;
+  const relayCall = async (pathName, body) => {
+    const res = await fetch(`${relayUrl}${pathName}`, { method: 'POST', headers: { authorization: `Bearer ${env.NOTE_RELAY_SECRET}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(`봇 서버 ${pathName} 실패: ${j.error || res.status}`), { code: res.status });
+    return j;
+  };
+  // 워커가 텔레그램 실패를 { status:'failed', error, code } 로 알려 주면 직접 보낼 때와 같은 오류로 바꾼다
+  const relay = relayUrl ? async (member, text) => {
+    const j = await relayCall('/relay/send', { member, text });
+    if (j.status === 'failed') throw Object.assign(new Error(j.error || '텔레그램 발송 실패'), { code: j.code ?? null });
+    return { status: j.status, messageId: j.messageId };
+  } : null;
+  const r = await runNotify({ env, git, gh: makeGh(env), relay, send: (token, chatId, text) => telegramApi(token, 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } }), ledger });
+  if (relayUrl && r.ledger.verifiedSha) {
+    try { await relayCall('/relay/verified', { sha: r.ledger.verifiedSha }); } catch (e) { console.log(`::warning title=미믹노트::봇 서버에 확인된 상태를 알리지 못함(${e.message})`); }
+  }
 
   console.log(`미믹노트 알림: 이벤트 ${env.EVENT_NAME} · main ${r.head.slice(0, 7)} · 확인된 상태 ${String(r.verified).slice(0, 7)}`);
   console.log(`MIMIC_COVERS ${JSON.stringify(r.covered)}`);

@@ -5,7 +5,8 @@
 #              공개 저장소는 60일간 활동이 없으면 예약 실행이 자동으로 꺼진다.
 #              끄기: 저장소 변수 MIMIC_NOTE_SCHEDULE=off (비공개 전환 시 Actions 무료 시간을 아끼려면 끄거나 간격을 늘린다)
 #   workflow_dispatch  수동(체크인·재전송): gh workflow run mimic-checkin.yml -R newcode135-prog/mimic-note -f member=minho [-f force=true]
-# 비밀값(node mimic-note/telegram.mjs connect 가 등록): TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID_<아이디>
+# 비밀값: NOTE_RELAY_URL·NOTE_RELAY_SECRET(봇 서버 워커로 보냄 — node worker/setup.mjs 가 등록)이 있으면 그쪽으로,
+#         없으면 TELEGRAM_BOT_TOKEN·TELEGRAM_CHAT_ID_<아이디>(텔레그램에 직접)
 # pull_request 로는 실행하지 않는다 — 외부(포크) PR 코드에 비밀값이 닿지 않게.
 # 주의: 저장소 비밀값은 쓰기 권한이 있는 모든 사람의 워크플로에서 읽힐 수 있고, push 의 코드가 그대로 실행된다.
 #       쓰기 권한 = 신뢰하는 사람만. 권한 확인(notify.mjs)은 실수·직접 수정을 잡는 감지 장치다.
@@ -62,6 +63,8 @@ jobs:
           ACTOR: ${{ github.actor }}
           INPUT_MEMBER: ${{ inputs.member }}
           INPUT_FORCE: ${{ inputs.force }}
+          NOTE_RELAY_URL: ${{ secrets.NOTE_RELAY_URL }}
+          NOTE_RELAY_SECRET: ${{ secrets.NOTE_RELAY_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
           TELEGRAM_CHAT_ID_CHANGMIN: ${{ secrets.TELEGRAM_CHAT_ID_CHANGMIN }}

@@ -6,11 +6,11 @@
 //   우리는 최신본을 다시 읽어 같은 작업을 다시 적용한다. 강제로 덮어쓰지 않는다.
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { NOTE_DIR, REPO } from './lib.mjs';
+import { NOTE_DIR, REPO, DB_FILE, MEMBERS_FILE } from './lib.mjs';
+
+export { DB_FILE, MEMBERS_FILE };
 
 export const WORKFLOW = 'mimic-checkin.yml';
-export const DB_FILE = 'mimic-note/data/missions.json';
-export const MEMBERS_FILE = 'mimic-note/data/members.json';
 const ROOT = path.resolve(NOTE_DIR, '..');
 
 function gh(args, input) {

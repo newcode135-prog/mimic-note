@@ -1,0 +1,12 @@
+# 코어 오브 미믹노트 봇 서버(클라우드플레어 워커). 설치·배포: node worker/setup.mjs
+name = "mimic-note-bot"
+main = "index.mjs"
+compatibility_date = "2026-10-01"
+
+[vars]
+REPO = "newcode135-prog/mimic-note"
+
+# setup.mjs 가 처음 실행할 때 KV 를 만들고 id 를 채운다(비밀값 아님)
+[[kv_namespaces]]
+binding = "NOTE"
+id = "REPLACE_WITH_KV_ID"

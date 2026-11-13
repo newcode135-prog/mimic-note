@@ -33,6 +33,7 @@
 - `mimic-note/data/auto/todos.json` 은 패시브 스킬 [자동 다운로드](`mimic-note/passive/`)만 쓴다.
 - [사고력 게임]: 체크인 ④에 마지막 게임이 나온다. 플레이어가 답하면 `node mimic-note/game.mjs <이름> answer "<답>"` → commit·push.
 - 액티브 스킬 [로그아웃]: `[로그아웃]` 이라고 하면 `node mimic-note/logout.mjs <이름>` → 최종본의 라벨·결정·다음만 고침 → `node mimic-note/logout.mjs <이름> --upload "<파일>"`.
+- 봇 서버(24시간): `node worker/setup.mjs` 를 저장소 주인이 본인 터미널에서 실행(클라우드플레어 로그인·GitHub 토큰은 본인이 입력). 서버를 쓰면 `bot.mjs` 는 끈다.
 - `코어봇 켜` → `node mimic-note/bot.mjs` 를 사용자 터미널에서 실행(한 컴퓨터에서만). 봇이 켜져 있으면 새 연결 링크는 `node mimic-note/telegram.mjs connect --no-wait`.
 - 팀원 명부·진행 기록은 `mimic-note/README.md`. 토큰·chat id 는 파일에 쓰지 않는다(공개 저장소).
 
