@@ -325,10 +325,11 @@
       "order": 2,
       "title": "GitHub 아이디를 민호님에게 알려 주기(저장소 초대용)",
       "detail": "아이디가 없으면 github.com 에서 가입한 뒤 알려 주세요",
-      "status": "todo",
+      "status": "done",
       "createdBy": "minho",
       "createdAt": "2026-11-13T09:37:53.310Z",
-      "doneAt": null
+      "doneAt": "2026-11-13T15:32:10.987Z",
+      "doneBy": "mino"
     },
     {
       "id": "M-0029",
