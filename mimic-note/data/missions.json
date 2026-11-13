@@ -446,5 +446,8 @@
       "createdAt": "2026-11-13T15:31:20.355Z",
       "doneAt": null
     }
-  ]
+  ],
+  "langs": {
+    "yuri": "en"
+  }
 }
