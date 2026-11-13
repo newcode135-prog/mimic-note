@@ -8,7 +8,7 @@
 //   GET  /health
 //
 // KV(바인딩 NOTE): chat:<chat id> → 팀원, member:<팀원> → chat id(사람마다 따로 — 동시에 연결해도 안 섞임),
-//   code:<코드>(24시간 일회용 링크), verified, trusted(봇이 만든 커밋 → 부모), app:pend:·app:compose:·app:busy:(10분 이하 임시).
+//   code:<코드>(24시간 일회용 링크), verified, trusted:<커밋>(봇이 만든 커밋 → 부모, 30일), app:pend:·app:compose:·app:busy:(10분 이하 임시).
 // 무료 한도(하루 요청 10만·KV 쓰기 1천·요청당 CPU 10ms)는 6명 팀이면 넉넉하다.
 // 비밀값이 없거나 짧으면 모든 보호된 요청을 거절한다(fail closed). 토큰·chat id 는 로그·답장에 쓰지 않는다.
 // 한계: RELAY_SECRET 은 GitHub Actions 비밀값이라 저장소 쓰기 권한자는 꺼낼 수 있다(그 사람은 봇 이름으로 팀원에게
@@ -19,8 +19,6 @@ import {
 import { handleUpdate, linkAllowed } from '../mimic-note/app.mjs';
 
 const enc = new TextEncoder();
-const dec = new TextDecoder();
-const b64decode = (s) => dec.decode(Uint8Array.from(atob(String(s).replace(/\s/g, '')), (c) => c.charCodeAt(0)));
 function b64encode(text) {
   const bytes = enc.encode(text);
   let bin = '';
@@ -61,15 +59,18 @@ export function githubApi(env) {
     whoami: async () => (await call('GET', '/user')).login,
     access: async () => (await call('GET', `/repos/${repo}`)).permissions || {},
     headSha: async () => (await call('GET', `/repos/${repo}/git/ref/heads/main`)).object.sha,
+    // 원문 그대로 받는다(base64 풀기는 파일이 크면 무료 요금제의 CPU 10ms 를 넘김). blob sha 는 워커에서 쓰지 않는다(chain 으로 확인).
     readFile: async (file, ref = 'main') => {
-      const j = await call('GET', `/repos/${repo}/contents/${file}?ref=${encodeURIComponent(ref)}`);
-      return { text: b64decode(j.content), sha: j.sha };
+      const res = await doFetch(`https://api.github.com/repos/${repo}/contents/${file}?ref=${encodeURIComponent(ref)}`, { headers: { authorization: `Bearer ${env.GITHUB_TOKEN}`, accept: 'application/vnd.github.raw+json', 'x-github-api-version': '2022-11-28', 'user-agent': 'mimic-note-bot' } });
+      if (!res.ok) throw Object.assign(new Error(`GitHub GET /repos/${repo}/contents/${file} → ${res.status}`), { status: res.status });
+      return { text: await res.text(), sha: null };
     },
     async commitFile(parent, file, text, message) {
       const blob = await call('POST', `/repos/${repo}/git/blobs`, { content: b64encode(text), encoding: 'base64' });
       const base = await call('GET', `/repos/${repo}/git/commits/${parent}`);
       const tree = await call('POST', `/repos/${repo}/git/trees`, { base_tree: base.tree.sha, tree: [{ path: file, mode: '100644', type: 'blob', sha: blob.sha }] });
       const commit = await call('POST', `/repos/${repo}/git/commits`, { message, tree: tree.sha, parents: [parent] });
+      await addTrusted(env, commit.sha, parent); // main 에 못 올라가도 해가 없다(사슬 확인에만 씀)
       try {
         await call('PATCH', `/repos/${repo}/git/refs/heads/main`, { sha: commit.sha, force: false });
       } catch (e) {
@@ -101,7 +102,8 @@ export function githubApi(env) {
   };
 }
 
-const ownerOf = (env, chatId) => env.NOTE.get(`chat:${chatId}`);
+// chat→팀원은 팀원→chat 도 같은 대화일 때만 믿는다(동시에 같은 코드를 쓴 대화가 남지 않게)
+const ownerOf = async (env, chatId) => { const m = await env.NOTE.get(`chat:${chatId}`); return m && (await env.NOTE.get(`member:${m}`)) === String(chatId) ? m : null; };
 const chatOf = (env, member) => env.NOTE.get(`member:${member}`);
 async function linkChat(env, chatId, member) {
   const old = await chatOf(env, member);
@@ -111,10 +113,10 @@ async function linkChat(env, chatId, member) {
   return old && old !== chatId ? old : null;
 }
 
-// 봇이 만든 커밋 → 부모(최근 500개) — 확인 전에도 이어서 저장·표시(core.safeHead)
-async function loadTrusted(env) {
-  try { return new Map(JSON.parse((await env.NOTE.get('trusted')) || '[]').filter((x) => SHA_RE.test(x?.[0]) && SHA_RE.test(x?.[1]))); } catch { return new Map(); }
-}
+// 봇이 만든 커밋 — 확인 전에도 이어서 저장·표시(core.safeHead). 커밋마다 따로 된 키(trusted:<sha>, 30일)라
+// 여러 요청이 동시에 저장해도 서로의 기록을 덮어쓰지 않는다.
+const addTrusted = (env, commit, parent) => env.NOTE.put(`trusted:${commit}`, parent, { expirationTtl: 30 * 86400 });
+const trustedStore = (env) => ({ has: async (c) => SHA_RE.test(c || '') && (await env.NOTE.get(`trusted:${c}`)) != null });
 
 // 커밋 내용은 바뀌지 않으니 커밋별로 기억(같은 워커 인스턴스 안에서), main 은 1분
 const memo = new Map();
@@ -135,19 +137,14 @@ let botUsername = null;
 export function workerCtx(env) {
   const gh = githubApi(env);
   const tg = (method, body) => telegramApi(env.TELEGRAM_BOT_TOKEN, method, body, { fetchFn: env.fetch || fetch });
-  let trusted = null;
-  const getTrusted = async () => (trusted ||= await loadTrusted(env));
   const verifiedState = async () => {
     const v = await env.NOTE.get('verified');
     if (!v) throw new Error('GitHub Actions 의 확인 상태를 아직 받지 못했어요');
     let sha = v;
-    const t = await getTrusted();
-    if (t.size) {
-      try {
-        const h = await gh.headSha();
-        if (h !== v && await safeHead(gh, h, v, t)) sha = h;
-      } catch { /* 확인된 상태로 */ }
-    }
+    try {
+      const h = await gh.headSha();
+      if (h !== v && await safeHead(gh, h, v, trustedStore(env))) sha = h;
+    } catch { /* 확인된 상태로 */ }
     const members = (await readAt(gh, MEMBERS_FILE, sha)).members;
     const db = await readAt(gh, DB_FILE, sha);
     if (validateMembers(members).length || validateDb(db, members).length) throw new Error('확인된 데이터가 올바르지 않아요');
@@ -165,19 +162,8 @@ export function workerCtx(env) {
     },
     langHint: async (memberId) => langCache.get(memberId) || null,
     state: verifiedState,
-    async save(apply, describe, as) {
-      const t = await getTrusted();
-      const w = await mutate(gh, apply, describe, { as, via: '텔레그램', trusted: t });
-      if (w.commit) {
-        const fresh = await loadTrusted(env); // 다른 요청이 그사이 넣은 것도 살리기
-        for (const [c, p] of t) if (!fresh.has(c)) fresh.set(c, p);
-        fresh.set(w.commit, w.parent);
-        while (fresh.size > 500) fresh.delete(fresh.keys().next().value);
-        trusted = fresh;
-        await env.NOTE.put('trusted', JSON.stringify([...fresh]));
-      }
-      return w;
-    },
+    // 봇 커밋 기록은 commitFile 이 main 에 올리기 전에 남기고, mutate 는 시도마다 KV 에서 다시 읽는다(다른 요청의 저장 위에 이어서)
+    save: (apply, describe, as) => mutate(gh, apply, describe, { as, via: '텔레그램', trusted: trustedStore(env) }),
     kv: {
       get: async (k) => { const raw = await env.NOTE.get(kvKey(k)); try { return raw == null ? null : JSON.parse(raw); } catch { return null; } },
       put: (k, value, ttl) => env.NOTE.put(kvKey(k), JSON.stringify(value), { expirationTtl: Math.max(60, Math.floor(ttl)) }),
@@ -193,13 +179,13 @@ export function workerCtx(env) {
       const code = u.message.text.trim().match(/^\/start(?:@\w+)?\s+(\S+)$/)?.[1];
       const raw = code && /^[A-Za-z0-9_-]{16}$/.test(code) ? await env.NOTE.get(`code:${code}`) : null;
       if (!raw) return { key: 'linkExpired' };
+      await env.NOTE.delete(`code:${code}`); // 먼저 지운다 — 같은 코드를 거의 동시에 쓴 다른 대화가 함께 연결되지 않게
       const c = JSON.parse(raw);
       const { members, db } = await verifiedState();
       const member = members.find((m) => m.id === c.member);
       if (!member) return { text: '명부에 없는 팀원의 링크예요. 관리자에게 문의하세요.' };
       const by = members.find((m) => m.id === c.by);
       if ((await chatOf(env, member.id)) && by?.role !== 'owner') return { text: `${member.name}님은 이미 연결돼 있어요. 다시 연결하려면 대표관리자에게 새 링크를 요청하세요.` };
-      await env.NOTE.delete(`code:${code}`);
       const evicted = await linkChat(env, replyTo, member.id);
       if (evicted) await tg('sendMessage', { chat_id: evicted, text: `이 대화의 미믹노트 연결(${esc(member.name)})이 해제됐어요 — 다른 텔레그램 대화로 다시 연결됐습니다. 본인이 한 게 아니면 대표관리자에게 알려 주세요.`, parse_mode: 'HTML' }).catch(() => {});
       await tg('sendMessage', { chat_id: replyTo, text: esc(tr(lang).linked(dn(member, lang))), parse_mode: 'HTML' });
@@ -217,15 +203,15 @@ export function workerCtx(env) {
       botUsername ||= (await tg('getMe', {})).username;
       return `🔗 <b>${esc(target.name)}</b>님 연결 링크(24시간·한 번만)\nhttps://t.me/${botUsername}?start=${code}\n\n${esc(target.name)}님에게만 개인 메시지로 보내 주세요.`;
     },
-    latestDb: async () => JSON.parse((await gh.readFile(DB_FILE, 'main')).text),
     randomKey: () => randomKey(9),
     log: (line) => console.log(line),
   };
 }
 
 // Actions 가 붙여 보내는 버튼은 미션 앱 버튼(✅ 완료·🔄 새로고침)만 받는다
-const okMarkup = (m) => m && Array.isArray(m.inline_keyboard) && m.inline_keyboard.length <= 20
+const okMarkup = (m) => m && typeof m === 'object' && Object.keys(m).length === 1 && Array.isArray(m.inline_keyboard) && m.inline_keyboard.length <= 20
   && m.inline_keyboard.every((row) => Array.isArray(row) && row.length <= 8 && row.every((b) => b && typeof b.text === 'string' && b.text.length <= 64 && /^[cv]:[\w-]{1,40}$/.test(b.callback_data || '') && Object.keys(b).length === 2));
+const cleanMarkup = (m) => ({ inline_keyboard: m.inline_keyboard.map((row) => row.map((b) => ({ text: b.text, callback_data: b.callback_data }))) });
 
 // Actions → 팀원 아이디로 발송(chat id 는 워커만 안다). 길이 판단은 텔레그램에 맡긴다.
 async function relaySend(body, env) {
@@ -236,7 +222,7 @@ async function relaySend(body, env) {
   const chatId = await chatOf(env, member);
   if (!chatId) return { status: 'unconnected' };
   try {
-    const r = await telegramApi(env.TELEGRAM_BOT_TOKEN, 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...(body.reply_markup ? { reply_markup: body.reply_markup } : {}) }, { fetchFn: env.fetch || fetch });
+    const r = await telegramApi(env.TELEGRAM_BOT_TOKEN, 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...(body.reply_markup ? { reply_markup: cleanMarkup(body.reply_markup) } : {}) }, { fetchFn: env.fetch || fetch });
     if (!r?.message_id || String(r.chat?.id) !== String(chatId)) return { status: 'failed', error: 'sendMessage 응답이 올바르지 않음' };
     return { status: 'sent', messageId: r.message_id };
   } catch (e) {

@@ -776,13 +776,14 @@ export async function safeHead(github, head, verified, trusted = null) {
   if (head === verified) return true;
   const chain = await github.chain(verified, head);
   if (!chain) return false;
-  for (const c of chain) if (!trusted?.has(c) && await github.touchesData(c)) return false;
+  for (const c of chain) if (!(await trusted?.has(c)) && await github.touchesData(c)) return false; // has 는 Map 이든 비동기(KV)든
   return true;
 }
 
 // GitHub main 의 최신 미션 DB 에 apply 를 적용해 저장한다. 충돌(그사이 누가 바꿈)이면 최신본으로 다시(최대 3번).
 // as: 코어 오브 미믹노트 봇이 텔레그램 연결(일회용 코드)로 확인한 팀원 아이디 — 이때는 gh 계정은 저장만 하고, 권한은 그 팀원 역할로 본다.
 // trusted: 봇이 직접 만든 커밋(Map 커밋 → 부모) — 그 커밋들은 Actions 확인 전이라도 이어서 저장한다(safeHead).
+//   함수(async () => Map)면 시도마다 다시 읽는다 — 워커처럼 여러 요청이 동시에 저장할 때 다른 요청의 봇 커밋도 보이게.
 export async function mutate(github, apply, describe, { as = null, via = null, trusted = null } = {}) {
   const login = await github.whoami();
   const access = await github.access();
@@ -805,7 +806,7 @@ export async function mutate(github, apply, describe, { as = null, via = null, t
       const v = await github.verifiedSha();
       if (!v) throw new Error('GitHub Actions 의 확인 상태를 알 수 없어 저장을 멈췄어요. 잠시 뒤 다시 해 주세요.');
       // 커밋 사슬을 볼 수 있는 어댑터(gh)는 safeHead, 못 보는 어댑터(워커)는 예전처럼 "확인된 상태와 같은 내용"
-      const ok = github.chain ? await safeHead(github, head, v, trusted)
+      const ok = github.chain ? await safeHead(github, head, v, typeof trusted === 'function' ? await trusted() : trusted)
         : (await github.readFile(MEMBERS_FILE, v)).sha === mf.sha && (await github.readFile(DB_FILE, v)).sha === sha;
       if (!ok) throw new Error('main 에 아직 확인되지 않은 변경이 있어 저장을 멈췄어요(다른 곳에서 방금 저장한 내용을 처리 중이거나 관리자 확인이 필요). 1분쯤 뒤 다시 해 주세요.');
     }

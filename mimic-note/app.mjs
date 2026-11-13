@@ -12,10 +12,9 @@
 //   unlinkedMembers() → members          연결 안 된 대화에 보여 줄 버튼판용 명부
 //   link(u, lang) → { member, members } | { key } | { text }   연결 안 된 대화의 /start <코드> (연결 완료 문구는 플랫폼이 보냄)
 //   makeLink(owner, target, members) → 안내 문구   (선택) 관리자 "루카스 연결링크"
-//   latestDb() → main 의 미션 DB(안내용 — 거의 동시에 두 번 누른 완료가 이미 저장됐는지)
 //   randomKey() · log(line)
 import {
-  ADMIN_ROLES, esc, menuKeyboard, menuText, decide, confirmText, resolveRefs, boardText, boardKeyboard, teamText, sentText,
+  ADMIN_ROLES, esc, normTitle, openMissions, pendingRequests, menuKeyboard, menuText, decide, confirmText, resolveRefs, boardText, boardKeyboard, teamText, sentText,
   decideCallback, composePrompt, requestNotice, respondNotice, respondRequest, setLang, ACTIONS, resultText, langKeyboard,
   tr, dn, langOf, guessLang, findMember, LANG_NAMES,
 } from './core.mjs';
@@ -33,9 +32,11 @@ export async function handleUpdate(u, ctx) {
     .catch((e) => (/not modified/i.test(e.message) ? null : send(chatId, text, markup ? { reply_markup: markup } : {})));
   const replyTo = String(u.message?.chat?.id || u.callback_query?.message?.chat?.id || '');
   if (!replyTo) return;
-  const ownerId = await ctx.ownerOf(replyTo);
-  let lang = ownerId ? ((await ctx.langHint(ownerId)) || 'ko') : guessLang(u.message?.from?.language_code || u.callback_query?.from?.language_code);
+  let ownerId = null;
+  let lang = guessLang(u.message?.from?.language_code || u.callback_query?.from?.language_code);
   try {
+    ownerId = await ctx.ownerOf(replyTo);
+    if (ownerId) lang = (await ctx.langHint(ownerId)) || 'ko';
     if (u.callback_query) return await onCallback(u.callback_query);
     const msg = u.message;
     if (!msg?.chat || msg.chat.type !== 'private' || typeof msg.text !== 'string') return; // 단체방·사진 등은 무시
@@ -65,7 +66,7 @@ export async function handleUpdate(u, ctx) {
     if (/^[gx]:/.test(data)) {
       const key = data.slice(2);
       const p = /^[\w-]{1,40}$/.test(key) ? await ctx.kv.get(`pend:${key}`) : null;
-      if (!p || p.chatId !== replyTo || p.fromId !== String(cq.from?.id)) return answer(tr(lang).expired);
+      if (!p || p.chatId !== replyTo || p.fromId !== String(cq.from?.id) || p.ownerId !== ownerId) return answer(tr(lang).expired);
       await ctx.kv.del(`pend:${key}`);
       lang = p.lang || lang;
       const t = tr(lang);
@@ -88,12 +89,10 @@ export async function handleUpdate(u, ctx) {
           } else await send(replyTo, t.targetUnlinked(esc(shown)));
         }
       } catch (e) {
-        if (p.action === 'done' && p.ids.length) {
-          try {
-            const latest = await ctx.latestDb();
-            if (p.ids.every((id) => latest.missions.find((m) => m.id === id)?.status === 'done')) return void (await edit(replyTo, mid, t.alreadyDone(esc(p.shown || p.targetName))));
-          } catch { /* 아래 실패 표시 */ }
-        }
+        try {
+          const { db: now } = await ctx.state();
+          if (applied(p, now)) return void (await edit(replyTo, mid, (p.action === 'done' ? t.alreadyDone : t.alreadySaved)(esc(p.shown || p.targetName))));
+        } catch { /* 아래 실패 표시 */ }
         await edit(replyTo, mid, t.saveFail(esc(e.message)));
       }
       return;
@@ -127,7 +126,8 @@ export async function handleUpdate(u, ctx) {
     } else if (d.kind === 'respond') {
       const busyKey = `busy:${d.mission.id}`;
       if (await ctx.kv.get(busyKey)) return answer(t.busy);
-      await ctx.kv.put(busyKey, 1, 60);
+      const mine = ctx.randomKey();
+      await ctx.kv.put(busyKey, mine, 60);
       await answer(d.accept ? t.accepting : t.declining);
       try {
         const label = d.accept ? '요청수락' : '요청거절';
@@ -141,9 +141,11 @@ export async function handleUpdate(u, ctx) {
         if (reqChat) await send(reqChat, respondNotice(m, d.accept, w.actor, assignee, langOf(w.db, m.createdBy))).catch((e) => ctx.log(`요청 결과 알림 실패: ${e.message}`));
         ctx.log(`${w.actor.name} ${label} ${m.id} (${w.commit ? w.commit.slice(0, 7) : '변경 없음'})`);
       } catch (e) {
-        await send(replyTo, t.respondFail(esc(e.message)));
+        let handled = false;
+        try { handled = (await ctx.state()).db.missions.find((x) => x.id === d.mission.id)?.status !== 'requested'; } catch { /* 아래 실패 표시 */ }
+        await send(replyTo, handled ? t.handled : t.respondFail(esc(e.message)));
       } finally {
-        await ctx.kv.del(busyKey);
+        if ((await ctx.kv.get(busyKey)) === mine) await ctx.kv.del(busyKey);
       }
     }
   }
@@ -165,13 +167,11 @@ export async function handleUpdate(u, ctx) {
     const t = tr(lang);
     const owner = members.find((m) => m.id === ownerId) || null;
     // 관리자: "루카스 연결링크" / "/link 루카스" → 그 팀원 일회용 연결 링크(플랫폼이 지원할 때)
-    const lk = ctx.makeLink && msg.text.trim().match(/^(?:\/link(?:@\w+)?\s+(\S+)|(\S+?)\s*연결\s*링크)$/);
-    if (lk && owner) {
-      const target = findMember(lk[1] || lk[2], members);
-      return void (await send(replyTo, await ctx.makeLink(owner, target, members)));
-    }
     const c = await ctx.kv.get(`compose:${replyTo}`);
     const ct = c && Date.now() - c.at < PENDING_SEC * 1000 ? members.find((m) => m.id === c.target) : null;
+    const lk = ctx.makeLink && !ct && msg.text.trim().match(/^(?:\/link(?:@\w+)?\s+(\S+)|(\S+?)\s*연결\s*링크)$/);
+    const lkTarget = lk && findMember(lk[1] || lk[2], members);
+    if (lkTarget && owner) return void (await send(replyTo, await ctx.makeLink(owner, lkTarget, members)));
     const chatOwners = new Map([[replyTo, ownerId]]); // 판단에는 보낸 사람 것만 있으면 된다
     const d = decide(msg, { members, chatOwners, compose: ct ? { target: ct } : null, lang });
     if (c && d.kind !== 'act-error') await ctx.kv.del(`compose:${replyTo}`); // 내용이 잘못됐으면 다시 적을 수 있게 남겨 둔다
@@ -197,10 +197,22 @@ export async function handleUpdate(u, ctx) {
   }
 }
 
-// 관리자 연결 링크 문구(워커가 씀) — 코드 만들기는 플랫폼이
+// 저장이 실패했지만 그 내용이 이미 들어가 있는지(거의 동시에 두 번 누름 등) — 확인된 상태(+봇 커밋) 기준
+export function applied(p, db) {
+  const titles = (list) => new Set(list.map((m) => normTitle(m.title)));
+  if (p.action === 'done') return p.ids.length > 0 && p.ids.every((id) => db.missions.find((m) => m.id === id)?.status === 'done');
+  const items = (p.items || []).map((it) => normTitle(it.title)).filter(Boolean);
+  if (!items.length) return false;
+  const have = titles(p.action === 'request' ? pendingRequests(db, p.targetId) : openMissions(db, p.targetId));
+  if (p.action === 'set') { const open = openMissions(db, p.targetId); return open.length === new Set(items).size && items.every((k) => have.has(k)); }
+  return items.every((k) => have.has(k));
+}
+
+// 관리자 연결 링크를 만들어도 되는지(워커가 씀) — 코드 만들기는 플랫폼이.
+// 대표관리자의 링크는 대표관리자만(관리자가 대표관리자로 연결해 재연결 권한을 얻지 못하게 — 처음 연결은 설치 때 옮긴 링크로).
 export function linkAllowed(owner, target, alreadyLinked) {
   if (!target) return 'noMember';
   if (!ADMIN_ROLES.has(owner.role)) return 'adminOnly';
-  if (alreadyLinked && owner.role !== 'owner') return 'ownerOnly';
+  if ((alreadyLinked || target.role === 'owner') && owner.role !== 'owner') return 'ownerOnly';
   return null;
 }

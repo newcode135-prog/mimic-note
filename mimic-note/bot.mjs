@@ -88,7 +88,10 @@ async function main() {
   if (!token) throw new Error('TELEGRAM_BOT_TOKEN 이 없습니다. 먼저 node mimic-note/telegram.mjs connect 로 봇 토큰을 등록하세요.');
   if (botRunningHere()) throw new Error('이 컴퓨터에서 이미 코어 오브 미믹노트 봇이 켜져 있습니다.');
   const hook = await telegramApi(token, 'getWebhookInfo');
-  if (hook.url) throw new Error(`이 봇은 클라우드플레어 봇 서버(${new URL(hook.url).host})에서 돌고 있어요 — 이 컴퓨터에서는 켜지 않습니다(같은 봇은 한 곳에서만).`);
+  if (hook.url) { // 정상 종료(0) — 맥미니 launchd 가 실패로 보고 30초마다 다시 켜지 않게
+    console.log(`이 봇은 클라우드플레어 봇 서버(${new URL(hook.url).host})에서 돌고 있어요 — 이 컴퓨터에서는 켜지 않습니다(같은 봇은 한 곳에서만).`);
+    process.exit(0);
+  }
   fs.mkdirSync(HOME_DIR(), { recursive: true });
   fs.writeFileSync(LOCK(), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
   const unlock = () => { try { if (JSON.parse(fs.readFileSync(LOCK(), 'utf8')).pid === process.pid) fs.unlinkSync(LOCK()); } catch { /* 이미 없음 */ } };
@@ -176,7 +179,6 @@ async function main() {
       }
       return r.replies[0] ? { key: r.replies[0].key, text: r.replies[0].text } : { key: 'linkNeedCode' };
     },
-    latestDb: async () => JSON.parse(github.readFile(DB_FILE, 'main').text),
     randomKey: () => crypto.randomBytes(6).toString('base64url'),
     log: (line) => console.log(`${new Date().toISOString()} ${line}`),
   };

@@ -203,14 +203,19 @@ export async function runNotify({ env, git, gh, send, relay = null, ledger, now 
 
   // 3) 발송 — 팀원 아이디로 보낸다(워커를 거치거나, 직접이면 chat id 를 찾아 응답까지 확인)
   const token = env.TELEGRAM_BOT_TOKEN;
-  const deliver = relay || (async (memberId, text, extra = {}) => {
+  const direct = async (memberId, text, extra = {}) => {
     if (!token) return { status: 'unconfigured' };
     const chatId = chatIdFor(memberId, env);
     if (!chatId) return { status: 'unconnected' };
     const r = await send(token, chatId, text, extra);
     if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
     return { status: 'sent', messageId: r.message_id };
-  });
+  };
+  // 봇 서버(워커)가 모르는 사람(다른 컴퓨터에서 연결)은 예전처럼 직접 — 알림이 끊기지 않게
+  const deliver = relay ? async (memberId, text, extra = {}) => {
+    const r = await relay(memberId, text, extra);
+    return r.status === 'unconnected' && token && chatIdFor(memberId, env) ? direct(memberId, text, extra) : r;
+  } : direct;
   if (!halted && !curBad.length) {
     for (const id of candidates) {
       const member = cur.members.find((m) => m.id === id);

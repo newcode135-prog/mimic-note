@@ -52,7 +52,7 @@ cat > "$PLIST" <<PLIST
   </array>
   <key>WorkingDirectory</key><string>$REPO_DIR</string>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>30</integer>
   <key>StandardOutPath</key><string>$LOG</string>
   <key>StandardErrorPath</key><string>$LOG</string>

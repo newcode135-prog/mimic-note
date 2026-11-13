@@ -179,7 +179,7 @@ export async function waitForNotify(github, { commit, afterRunId = 0, actor, tim
 const LABEL = {
   sent: '✅ 발송 성공(텔레그램이 받았다고 응답)',
   'already-sent': '같은 내용을 이미 보냈음 — 중복 발송 안 함',
-  unconnected: '⚠️ 텔레그램 미연결(node mimic-note/telegram.mjs connect)',
+  unconnected: '⚠️ 텔레그램 미연결(관리자가 봇에 "<이름> 연결링크" — 봇 서버가 없으면 node mimic-note/telegram.mjs connect)',
   unconfigured: '⚠️ 봇 토큰 미설정(GitHub 비밀값 TELEGRAM_BOT_TOKEN 없음)',
   failed: '❌ 발송 실패',
   alert: '⚠️ 대표관리자에게 경고 발송',
