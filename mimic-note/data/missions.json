@@ -452,10 +452,11 @@
       "order": 12,
       "title": "공유 라이브러리(새 저장소 형태) 결론 읽고 결정 항목 확인 — mimic-note/guides/공유-라이브러리-결론.md",
       "detail": "",
-      "status": "todo",
+      "status": "done",
       "createdBy": "changmin",
       "createdAt": "2026-11-13T16:24:55.319Z",
-      "doneAt": null
+      "doneAt": "2026-11-13T16:55:54.074Z",
+      "doneBy": "yuri"
     }
   ],
   "langs": {
