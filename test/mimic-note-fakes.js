@@ -84,9 +84,9 @@ export function fakeGit(history) {
 export function fakeTelegram({ fail = {} } = {}) {
   const sent = [];
   let mid = 500;
-  const send = async (token, chatId, text) => {
+  const send = async (token, chatId, text, extra = {}) => {
     if (fail[chatId]) throw fail[chatId];
-    sent.push({ token, chatId, text });
+    sent.push({ token, chatId, text, extra });
     return { message_id: ++mid, chat: { id: Number(chatId) } };
   };
   return { sent, send };

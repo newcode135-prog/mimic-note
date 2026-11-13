@@ -175,13 +175,14 @@ test('워커 연결 보안: 이미 연결된 사람의 재연결 링크는 대�
   assert.ok(w.tg.some((c) => c.method === 'sendMessage' && c.body.chat_id === '1003' && /연결\(유리\)이 해제됐어요/.test(c.body.text)), '예전 대화에 알림');
 });
 
-test('워커 버튼: 본인 버튼은 확인된 상태의 미션, 남의 버튼은 거절, 단체방은 무시, 확인 상태 없으면 정직하게 답함', async () => {
+test('워커 버튼: 본인 버튼은 확인된 상태의 미션, 남의 버튼은 그 사람 목록(버튼 없이), 단체방은 무시, 확인 상태 없으면 정직하게 답함', async () => {
   const w = world();
   await w.importer({ owners: { 1002: 'minho', 1004: 'nathan' }, codes: [], verified: w.root });
   await w.msg(1002, '민호봇');
   assert.match(w.lastText(), /민호님의 미션[\s\S]*1️⃣ 로그인 UI 개발/);
   await w.msg(1002, '창민봇');
-  assert.match(w.lastText(), /창민봇은 창민님만/);
+  assert.match(w.lastText(), /창민님의 미션/);
+  assert.ok(!/아래|버튼/.test(w.lastText()), '워커는 버튼을 붙이지 않으니 버튼 안내도 없음');
   const before = w.tg.length;
   await w.hook({ update_id: 999, message: { chat: { id: -100, type: 'group' }, from: { id: 1002 }, text: '민호봇' } });
   assert.equal(w.tg.length, before);
@@ -205,7 +206,9 @@ test('워커 미션 주기: 확인 버튼 뒤 확인한 커밋 위에만 저장(
   await w.tap(1002, data);
   assert.match(w.tg.at(-1).body.text || '', /이미 처리했거나 만료/);
   await w.msg(1004, '민호 이거 해줘');
-  assert.match(w.lastText(), /관리자\(창민·민호·유리\)만/);
+  assert.match(w.lastText(), /미션 요청은 아직 봇 서버에서 지원하지 않아요/, '수락할 길이 없는 요청은 만들지 않음');
+  await w.msg(1004, '루카스 이거 해줘');
+  assert.match(w.lastText(), /팀원끼리는/);
   await w.msg(1002, '유리 회의록');
   await w.tap(1004, w.askData(), 1004); // 다른 대화에서 누른 버튼
   assert.ok(!w.dbAtHead().missions.some((m) => m.title === '회의록'));

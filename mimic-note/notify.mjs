@@ -3,7 +3,7 @@
 //
 // 1) 장부의 "마지막으로 확인된 커밋(verifiedSha)"부터 지금 main 까지를 push 단위로 나눈다(push 기록 = 저장소 활동 API,
 //    [skip ci] push·force push 도 남는다). push 마다 그 push 를 한 GitHub 계정의 권한을 "확인된 상태"의 명부로 확인한다:
-//    미션 만들기·수정·후순위 = 관리자, 본인 미션 완료 = 본인, 삭제·명부 변경 = 대표관리자(저장소 주인 계정은 모두 가능).
+//    미션 만들기·수정·후순위 = 관리자, 본인 미션 완료 = 본인(팀원의 미션 요청·수락은 텔레그램 봇이 저장 — 봇의 저장 계정은 관리자), 삭제·명부 변경 = 대표관리자(저장소 주인 계정은 모두 가능).
 //    권한 없는 변경·깨진 데이터는 확인된 상태로 올리지 않는다 → 그 내용은 발송되지 않고, 실행은 실패, 대표관리자에게 경고.
 //    그 뒤 push 는 계속 "확인된 상태"와 비교하므로, 관리자 이상이 다시 저장하거나 되돌릴 때까지 보류된다.
 //    main 기록이 다시 쓰이면(force push) 저장소 관리자가 실행할 때만 다시 기준을 잡고, 그 전에는 아무것도 보내지 않는다.
@@ -19,7 +19,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ADMIN_ROLES, findMember, memberByGithub, openMissions, doneMissions, validateDb, validateMembers, chatIdFor, telegramApi , esc, clip, renderTelegram, renderDoneNotice } from './lib.mjs';
+import { ADMIN_ROLES, findMember, memberByGithub, openMissions, doneMissions, validateDb, validateMembers, chatIdFor, telegramApi , esc, clip, renderTelegram, renderDoneNotice, listKeyboard } from './lib.mjs';
 
 export { renderTelegram, renderDoneNotice };
 
@@ -83,6 +83,7 @@ export function loadLedger(file) {
 // deps: git(아래 makeGit 과 같은 모양), gh{pushes() → Map(push 후 커밋 → 계정), isRepoAdmin(login)},
 //       send(token, chatId, text) → sendMessage 결과, ledger(loadLedger)
 // relay(memberId, text) → { status: 'sent'|'unconnected'|'unconfigured', messageId } (실패는 throw, err.code):
+//   목록 메시지에는 ✅ 완료·🔄 버튼(reply_markup)을 붙인다(직접 보낼 때만, 버튼은 봇이 켜져 있을 때 동작).
 //   클라우드플레어 봇 서버(워커)를 거쳐 보내는 방식. 없으면 텔레그램에 직접(TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID_*).
 export async function runNotify({ env, git, gh, send, relay = null, ledger, now = () => new Date().toISOString() }) {
   const results = [];
@@ -149,7 +150,8 @@ export async function runNotify({ env, git, gh, send, relay = null, ledger, now 
       const was = new Map(base.db.missions.map((m) => [m.id, m]));
       for (const m of next.db.missions) {
         if (was.get(m.id)?.status === 'todo' && m.status === 'done') completed.set(m.id, m);
-        if (!was.has(m.id) && m.status === 'todo' && m.createdBy && m.createdBy !== m.assignee) added.set(m.id, m);
+        // 새로 생긴 미션 + 요청을 수락해 미션이 된 것(다른 사람이 준 것만)
+        if ((!was.has(m.id) || was.get(m.id).status === 'requested') && m.status === 'todo' && m.createdBy && m.createdBy !== m.assignee) added.set(m.id, m);
       }
       verified = c;
       base = next;
@@ -195,11 +197,11 @@ export async function runNotify({ env, git, gh, send, relay = null, ledger, now 
 
   // 3) 발송 — 팀원 아이디로 보낸다(워커를 거치거나, 직접이면 chat id 를 찾아 응답까지 확인)
   const token = env.TELEGRAM_BOT_TOKEN;
-  const deliver = relay || (async (memberId, text) => {
+  const deliver = relay || (async (memberId, text, extra = {}) => {
     if (!token) return { status: 'unconfigured' };
     const chatId = chatIdFor(memberId, env);
     if (!chatId) return { status: 'unconnected' };
-    const r = await send(token, chatId, text);
+    const r = await send(token, chatId, text, extra);
     if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
     return { status: 'sent', messageId: r.message_id };
   });
@@ -227,14 +229,15 @@ export async function runNotify({ env, git, gh, send, relay = null, ledger, now 
         results.push({ member: id, status: 'already-sent' });
         continue;
       }
+      const extra = { reply_markup: listKeyboard(cur.db, id) };
       try {
         let r;
         try {
-          r = await deliver(id, text);
+          r = await deliver(id, text, extra);
         } catch (e) {
           // "방금 완료" 줄이 붙은 메시지가 4xx(429 제외)로 거절되면 기본 목록으로 한 번 더 — 그 줄 때문에 계속 막히지 않게
           if (text === plain || typeof e.code !== 'number' || e.code < 400 || e.code >= 500 || e.code === 429) throw e;
-          r = await deliver(id, plain);
+          r = await deliver(id, plain, extra);
         }
         if (r.status !== 'sent') {
           st.pending = true;
@@ -344,10 +347,26 @@ function makeGh(env) {
   };
 }
 
+// 수동 실행 입력값은 이벤트 파일에서 읽는다 — 워크플로 env 로 넘기면 실행 로그에 그대로 찍혀, 봇이 읽는 MIMIC_VERIFIED 줄을
+// 흉내 낼 수 있다(github.mjs verifiedSha). 팀원 이름·아이디 모양(글자·숫자·_·-, 40자 이하)만 받는다.
+export function dispatchInputs(event) {
+  const raw = String(event?.inputs?.member ?? '').trim();
+  return { member: !raw ? '' : /^[\p{L}\p{N}_-]{1,40}$/u.test(raw) ? raw : '(형식이 틀린 입력)', force: String(event?.inputs?.force) === 'true' ? 'true' : 'false' };
+}
+
 const LABEL = { sent: '발송 성공', 'already-sent': '같은 내용 이미 보냄', unconnected: '미연결', unconfigured: '봇 토큰 미설정', failed: '실패', alert: '대표관리자 경고' };
 
 async function main() {
-  const env = process.env;
+  const env = { ...process.env };
+  delete env.INPUT_MEMBER;
+  delete env.INPUT_FORCE;
+  if (env.EVENT_NAME === 'workflow_dispatch' && env.GITHUB_EVENT_PATH) {
+    try {
+      const i = dispatchInputs(JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8')));
+      env.INPUT_MEMBER = i.member;
+      env.INPUT_FORCE = i.force;
+    } catch (e) { console.log(`::warning title=미믹노트::수동 실행 입력값을 못 읽음(${e.message})`); }
+  }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const ledgerFile = path.join(root, '.mimic-note-ledger', 'ledger.json');
   const git = makeGit(root);
@@ -367,7 +386,7 @@ async function main() {
     if (j.status === 'failed') throw Object.assign(new Error(j.error || '텔레그램 발송 실패'), { code: j.code ?? null });
     return { status: j.status, messageId: j.messageId };
   } : null;
-  const r = await runNotify({ env, git, gh: makeGh(env), relay, send: (token, chatId, text) => telegramApi(token, 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } }), ledger });
+  const r = await runNotify({ env, git, gh: makeGh(env), relay, send: (token, chatId, text, extra = {}) => telegramApi(token, 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...extra }), ledger });
   if (relayUrl && r.ledger.verifiedSha) {
     try { await relayCall('/relay/verified', { sha: r.ledger.verifiedSha }); } catch (e) { console.log(`::warning title=미믹노트::봇 서버에 확인된 상태를 알리지 못함(${e.message})`); }
   }

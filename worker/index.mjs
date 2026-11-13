@@ -8,13 +8,14 @@
 //
 // KV(바인딩 NOTE): chat:<chat id> → 팀원, member:<팀원> → chat id(사람마다 따로 — 동시에 연결해도 안 섞임),
 //   code:<코드>(24시간 일회용 링크), pend:<키>(확인 대기 10분), verified.
+// 한계: 미션 앱 버튼(✅ 완료·📨 주기/요청·요청 수락/거절·🔄)과 요청 알림은 아직 bot.mjs 에만 있다 — 여기서는 글 명령·보기만.
 // 무료 한도(하루 요청 10만·KV 쓰기 1천·요청당 CPU 10ms)는 5명 팀이면 넉넉하다.
 // 비밀값이 없거나 짧으면 모든 보호된 요청을 거절한다(fail closed). 토큰·chat id 는 로그·답장에 쓰지 않는다.
 // 한계: RELAY_SECRET 은 GitHub Actions 비밀값이라 저장소 쓰기 권한자는 꺼낼 수 있다(그 사람은 봇 이름으로 팀원에게
 //   메시지를 보내거나 확인 상태를 바꿔 알릴 수 있음) — 쓰기 권한은 믿는 사람에게만.
 import {
-  DB_FILE, MEMBERS_FILE, ADMIN_ROLES, esc, telegramApi, findMember, decide, menuText, menuKeyboard, missionsText, confirmText,
-  resolveRefs, addMissions, setMissions, completeMissions, validateDb, validateMembers, mutate,
+  DB_FILE, MEMBERS_FILE, ADMIN_ROLES, esc, telegramApi, findMember, decide, menuText, menuKeyboard, confirmText,
+  resolveRefs, validateDb, validateMembers, mutate, renderTelegram, teamText, sentText, ACTIONS, resultText,
 } from '../mimic-note/core.mjs';
 
 const enc = new TextEncoder();
@@ -144,8 +145,8 @@ async function onUpdate(u, env) {
       await env.NOTE.delete(`code:${code}`);
       const evicted = await linkChat(env, replyTo, member.id);
       if (evicted) await send(evicted, `이 대화의 미믹노트 연결(${esc(member.name)})이 해제됐어요 — 다른 텔레그램 대화로 다시 연결됐습니다. 본인이 한 게 아니면 대표관리자에게 알려 주세요.`).catch(() => {});
-      await send(replyTo, `✅ 미믹노트 연결 완료 — ${esc(member.name)}님의 미션 알림이 이 대화로 와요.\n\n${menuText(member)}`, { reply_markup: menuKeyboard(members) });
-      await send(replyTo, missionsText(member, db)); // 지금 미션을 바로(Actions 를 부르지 않음)
+      await send(replyTo, `✅ 미믹노트 연결 완료 — ${esc(member.name)}님의 미션 알림이 이 대화로 와요.\n\n${menuText(member, members, { app: false })}`, { reply_markup: menuKeyboard(members) });
+      await send(replyTo, renderTelegram(member, db)); // 지금 미션을 바로(Actions 를 부르지 않음)
       return;
     }
 
@@ -166,13 +167,13 @@ async function onUpdate(u, env) {
     }
     const d = decide(msg, { members, chatOwners });
     if (d.kind === 'ignore' || d.kind === 'link') return;
-    if (d.kind === 'menu' || d.kind === 'unlinked') return void (await send(replyTo, menuText(d.owner || null), { reply_markup: menuKeyboard(members) }));
-    if (d.kind === 'deny') return void (await send(replyTo, `${esc(d.target.name)}봇은 ${esc(d.target.name)}님만 쓸 수 있어요. 본인 버튼(<b>${esc(d.owner.name)}봇</b>)을 누르세요.`));
-    if (d.kind === 'missions') return void (await send(replyTo, missionsText(d.member, db)));
-    if (d.kind === 'act-denied') {
-      return void (await send(replyTo, d.action === 'done' ? '다른 사람의 미션 완료는 관리자만 할 수 있어요. 본인 미션만 완료하세요.' : `미션 주기·바꾸기는 관리자(${members.filter((m) => ADMIN_ROLES.has(m.role)).map((m) => esc(m.name)).join('·')})만 할 수 있어요.`));
-    }
+    if (d.kind === 'menu' || d.kind === 'unlinked') return void (await send(replyTo, menuText(d.owner || null, members, { app: false }), { reply_markup: menuKeyboard(members) }));
+    if (d.kind === 'board') return void (await send(replyTo, renderTelegram(d.member, db))); // 버튼 없이 목록만
+    if (d.kind === 'team') return void (await send(replyTo, teamText(members, db)));
+    if (d.kind === 'sent') return void (await send(replyTo, sentText(d.owner, members, db)));
+    if (d.kind === 'act-denied') return void (await send(replyTo, d.text));
     if (d.kind === 'act-error') return void (await send(replyTo, esc(d.error)));
+    if (d.kind === 'act' && d.action === 'request') return void (await send(replyTo, '미션 요청은 아직 봇 서버에서 지원하지 않아요(수락·거절 버튼이 없음). 관리자에게 직접 말해 주세요.'));
     if (d.kind === 'act') {
       let picked = [];
       if (d.action === 'done') {
@@ -203,20 +204,10 @@ async function onConfirm(cq, { env, tg, edit, gh, replyTo }) {
   await edit(replyTo, mid, '저장 중…'); // 버튼을 없애 두 번 눌리지 않게
   const n = esc(p.targetName);
   try {
-    const apply = {
-      add: (db, ms, actor) => addMissions(db, p.targetId, p.items, actor.id, ms),
-      set: (db, ms, actor) => setMissions(db, p.targetId, p.items, actor.id, ms),
-      done: (db, ms, actor) => ({ done: completeMissions(db, p.targetId, p.ids, { by: actor.id, members: ms }), changed: true }),
-    }[p.action];
-    const label = { add: '미션추가', set: '미션설정', done: '미션완료' }[p.action];
-    const w = await mutate(gh, apply, (r) => `${p.targetName} ${label}${r.added ? ` ${r.added.length}개` : ''}`, { as: p.ownerId, via: '텔레그램' });
-    const r = w.result;
-    const out = w.unchanged ? [`변경 없음 — ${n}님에게 이미 그대로 있어요.`]
-      : p.action === 'done' ? [`☑️ ${n}님의 미션을 완료했어요`, ...r.done.map((m) => `• [${m.id}] ${esc(m.title)}`)]
-        : p.action === 'set' ? [`♻️ ${n}님의 미션을 바꿨어요 — 새 ${r.added.length} · 유지 ${r.kept.length} · 보관 ${r.replaced.length}`]
-          : [`✅ ${n}님에게 미션을 줬어요`, ...r.added.map((m) => `• [${m.id}] ${esc(m.title)}`), ...(r.skipped.length ? [`(이미 있어서 건너뜀: ${r.skipped.map(esc).join(', ')})`] : [])];
-    if (!w.unchanged) out.push('', `${n}님에게 곧 텔레그램 알림이 가요.`);
-    await edit(replyTo, mid, out.join('\n'));
+    const spec = ACTIONS[p.action];
+    if (!spec) return void (await edit(replyTo, mid, '알 수 없는 확인이에요. 다시 보내 주세요.'));
+    const w = await mutate(gh, spec.apply(p), (r) => `${p.targetName} ${spec.label}${r.added ? ` ${r.added.length}개` : ''}`, { as: p.ownerId, via: '텔레그램' });
+    await edit(replyTo, mid, resultText(p.action, p.targetName, w));
   } catch (e) {
     // 같은 확인을 거의 동시에 두 번 눌러 이미 저장된 경우는 실패로 덮어쓰지 않는다
     if (p.action === 'done') {
