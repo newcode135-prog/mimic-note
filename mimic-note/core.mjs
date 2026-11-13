@@ -764,6 +764,10 @@ export function resolveRefs(db, memberId, refs) {
   });
 }
 
+// 커밋의 바뀐 파일 목록(commits API files)에 미션 데이터가 있는지. 목록이 없거나 300개 이상(잘림)이면 있다고 본다(모르면 믿지 않음).
+export const changesData = (files) => !Array.isArray(files) || files.length >= 300
+  || files.some((f) => [DB_FILE, MEMBERS_FILE].includes(f.filename) || [DB_FILE, MEMBERS_FILE].includes(f.previous_filename));
+
 // 봇이 head 위에 저장(또는 head 를 보여 줌)해도 되는지: head 가 Actions 가 확인한 커밋이거나, 확인된 커밋에서 head 까지의
 // main 첫 부모 사슬이 ① 봇이 직접 만든 커밋(trusted: Map 커밋 → 부모) ② 미션 데이터를 안 바꾼 커밋(코드·문서)으로만 이어질 때.
 // 내용이 아니라 커밋으로 판단한다 — 확인 전의 변경을 누가 되돌려(revert) 예전과 같은 내용이 돼도, 그 push 는 데이터를 바꾼

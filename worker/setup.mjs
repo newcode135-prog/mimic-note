@@ -18,6 +18,8 @@ import { readEnv, telegramApi, REPO } from '../mimic-note/lib.mjs';
 import { setEnvVar, setSecret, askHidden } from '../mimic-note/telegram.mjs';
 import { createGithub } from '../mimic-note/github.mjs';
 import { HOME_DIR } from '../mimic-note/passive/compress.mjs';
+import { setCommands } from '../mimic-note/bot.mjs';
+import { BOT_NAME } from '../mimic-note/lib.mjs';
 
 const WRANGLER = 'wrangler@4.157.0';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -129,7 +131,9 @@ async function main() {
   if (!imp.ok) throw new Error(`봇 서버에 옮기지 못했습니다(${imp.status}) — 비밀값이 막 등록돼 반영 중일 수 있으니 1분 뒤 다시 실행하세요.`);
   console.log(`   연결 ${(impJ.linked || []).join(', ') || '없음'}(이미 서버에 연결된 사람은 그대로) · 링크 ${codes.length}개 · 확인 상태 ${verified ? verified.slice(0, 7) : '다음 알림 때'}`);
 
-  console.log('⑦ 텔레그램 웹훅 연결…');
+  console.log('⑦ 텔레그램 웹훅 연결·봇 이름·명령어 메뉴…');
+  try { if ((await telegramApi(token, 'getMyName')).name !== BOT_NAME) await telegramApi(token, 'setMyName', { name: BOT_NAME }); } catch { /* 다음에 */ }
+  await setCommands(token);
   await telegramApi(token, 'setWebhook', { url: `${url}/telegram`, secret_token: env.NOTE_WEBHOOK_SECRET, allowed_updates: ['message', 'callback_query'] });
   const info = await telegramApi(token, 'getWebhookInfo');
   const health = await fetch(`${url}/health`).then((r) => r.text()).catch(() => '');

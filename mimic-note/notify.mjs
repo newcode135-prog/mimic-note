@@ -387,8 +387,8 @@ async function main() {
     return j;
   };
   // 워커가 텔레그램 실패를 { status:'failed', error, code } 로 알려 주면 직접 보낼 때와 같은 오류로 바꾼다
-  const relay = relayUrl ? async (member, text) => {
-    const j = await relayCall('/relay/send', { member, text });
+  const relay = relayUrl ? async (member, text, extra = {}) => {
+    const j = await relayCall('/relay/send', { member, text, ...(extra.reply_markup ? { reply_markup: extra.reply_markup } : {}) });
     if (j.status === 'failed') throw Object.assign(new Error(j.error || '텔레그램 발송 실패'), { code: j.code ?? null });
     return { status: j.status, messageId: j.messageId };
   } : null;
