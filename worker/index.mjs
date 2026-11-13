@@ -15,7 +15,7 @@
 //   메시지를 보내거나 확인 상태를 바꿔 알릴 수 있음) — 쓰기 권한은 믿는 사람에게만.
 import {
   DB_FILE, MEMBERS_FILE, ADMIN_ROLES, esc, telegramApi, findMember, decide, menuText, menuKeyboard, missionsText, confirmText,
-  resolveRefs, validateDb, validateMembers, mutate, boardText, teamText, sentText, ACTIONS, resultText,
+  resolveRefs, validateDb, validateMembers, mutate, renderTelegram, teamText, sentText, ACTIONS, resultText,
 } from '../mimic-note/core.mjs';
 
 const enc = new TextEncoder();
@@ -145,7 +145,7 @@ async function onUpdate(u, env) {
       await env.NOTE.delete(`code:${code}`);
       const evicted = await linkChat(env, replyTo, member.id);
       if (evicted) await send(evicted, `이 대화의 미믹노트 연결(${esc(member.name)})이 해제됐어요 — 다른 텔레그램 대화로 다시 연결됐습니다. 본인이 한 게 아니면 대표관리자에게 알려 주세요.`).catch(() => {});
-      await send(replyTo, `✅ 미믹노트 연결 완료 — ${esc(member.name)}님의 미션 알림이 이 대화로 와요.\n\n${menuText(member)}`, { reply_markup: menuKeyboard(members) });
+      await send(replyTo, `✅ 미믹노트 연결 완료 — ${esc(member.name)}님의 미션 알림이 이 대화로 와요.\n\n${menuText(member, members)}`, { reply_markup: menuKeyboard(members) });
       await send(replyTo, missionsText(member, db)); // 지금 미션을 바로(Actions 를 부르지 않음)
       return;
     }
@@ -168,11 +168,12 @@ async function onUpdate(u, env) {
     const d = decide(msg, { members, chatOwners });
     if (d.kind === 'ignore' || d.kind === 'link') return;
     if (d.kind === 'menu' || d.kind === 'unlinked') return void (await send(replyTo, menuText(d.owner || null, members), { reply_markup: menuKeyboard(members) }));
-    if (d.kind === 'board') return void (await send(replyTo, boardText(d.owner, d.member, db, members)));
+    if (d.kind === 'board') return void (await send(replyTo, renderTelegram(d.member, db))); // 버튼 없이 목록만
     if (d.kind === 'team') return void (await send(replyTo, teamText(members, db)));
     if (d.kind === 'sent') return void (await send(replyTo, sentText(d.owner, members, db)));
     if (d.kind === 'act-denied') return void (await send(replyTo, d.text));
     if (d.kind === 'act-error') return void (await send(replyTo, esc(d.error)));
+    if (d.kind === 'act' && d.action === 'request') return void (await send(replyTo, '미션 요청은 아직 봇 서버에서 지원하지 않아요(수락·거절 버튼이 없음). 관리자에게 직접 말해 주세요.'));
     if (d.kind === 'act') {
       let picked = [];
       if (d.action === 'done') {

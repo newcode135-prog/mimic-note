@@ -299,6 +299,7 @@ export function respondRequest(db, missionId, accept, by, members, now = new Dat
     throw new Error(accept ? '요청 수락(미션 배정)은 관리자만 할 수 있어요.' : '요청은 받은 사람이나 관리자만 거절할 수 있어요.');
   }
   if (accept) {
+    if (openMissions(db, m.assignee).some((x) => normTitle(x.title) === normTitle(m.title))) throw new Error('이미 같은 제목의 미션이 있어요 — 이 요청은 거절해 주세요.');
     m.order = db.missions.filter((x) => x.assignee === m.assignee && x.id !== m.id).reduce((a, x) => Math.max(a, x.order ?? 0), 0) + 1;
     Object.assign(m, { status: 'todo', acceptedAt: now, acceptedBy: actor.id });
   } else Object.assign(m, { status: 'declined', declinedAt: now, declinedBy: actor.id });
@@ -579,13 +580,10 @@ export function decideCallback(data, { viewer, members, db }) {
   return { kind: 'stale', text: '알 수 없는 버튼이에요.' };
 }
 
-// 미션 주기/요청 버튼을 누른 뒤 보내는 안내(답장 칸이 열림)
+// 미션 주기/요청 버튼을 누른 뒤 보내는 안내. 답장 강제(force_reply)는 쓰지 않는다 — 늘 떠 있는 이름 버튼판이 사라지므로.
 export function composePrompt(target, mode) {
-  return {
-    text: [`📨 <b>${esc(target.name)}</b>님에게 ${mode === 'add' ? '줄 미션' : '요청할 미션'}을 적어 보내 주세요.`, '',
-      '한 줄 = 미션 하나 · 설명은 <code>1. 제목</code> 다음 줄에 들여써서', '그만두려면 <code>취소</code>'].join('\n'),
-    reply_markup: { force_reply: true, input_field_placeholder: `${target.name}님에게 보낼 미션` },
-  };
+  return [`📨 <b>${esc(target.name)}</b>님에게 ${mode === 'add' ? '줄 미션' : '요청할 미션'}을 이 대화에 적어 보내 주세요(10분 안).`, '',
+    '한 줄 = 미션 하나 · 설명은 <code>1. 제목</code> 다음 줄에 들여써서', '그만두려면 <code>취소</code>'].join('\n');
 }
 
 // .env 의 TELEGRAM_CHAT_ID_<아이디> / TELEGRAM_CHAT_IDS 로 chat id → 팀원 아이디(GitHub 를 부르기 전에 알 수 있게)
@@ -698,10 +696,21 @@ export function resolveRefs(db, memberId, refs) {
   });
 }
 
+// head 가 봇이 이번 실행에서 만든 커밋이면: 봇 커밋들을 부모로 걷어 내려가 처음 바탕이 된 커밋이 확인된 상태(verified)와 같은 내용인지.
+// 봇은 확인된 내용 위에서만, main 을 빨리감기로만 저장하므로 그 위의 봇 커밋도 확인된 것과 같다.
+// 내용이 아니라 커밋으로 믿는다 — 누가 예전 봇 저장과 같은 내용으로 되돌려(revert) push 해도 새 커밋이라 믿지 않는다.
+export async function trustedHead(github, head, trusted, verified) {
+  if (!trusted?.has(head)) return false;
+  let base = head;
+  for (let n = 0; base !== verified && trusted.has(base) && n < 100; n++) base = trusted.get(base);
+  if (base === verified) return true;
+  for (const f of [MEMBERS_FILE, DB_FILE]) if ((await github.readFile(f, base)).sha !== (await github.readFile(f, verified)).sha) return false;
+  return true;
+}
+
 // GitHub main 의 최신 미션 DB 에 apply 를 적용해 저장한다. 충돌(그사이 누가 바꿈)이면 최신본으로 다시(최대 3번).
 // as: 코어 오브 미믹노트 봇이 텔레그램 연결(일회용 코드)로 확인한 팀원 아이디 — 이때는 gh 계정은 저장만 하고, 권한은 그 팀원 역할로 본다.
-// trusted: 봇이 이번 실행에서 직접 저장한 내용(`명부 blob:미션 blob`) Set — main 이 그 내용이면 Actions 확인 전이라도 이어서 저장한다
-//   (봇의 저장은 확인된 상태(또는 이전 봇 저장) 위에서만 하므로 그 내용도 확인된 것과 같다. 남의 변경이 섞이면 내용이 달라져 해당 없음).
+// trusted: 봇이 이번 실행에서 직접 만든 커밋(Map 커밋 → 부모) — main 이 그 커밋이면 Actions 확인 전이라도 이어서 저장한다(trustedHead).
 export async function mutate(github, apply, describe, { as = null, via = null, trusted = null } = {}) {
   const login = await github.whoami();
   const access = await github.access();
@@ -721,13 +730,11 @@ export async function mutate(github, apply, describe, { as = null, via = null, t
       // main 에 확인 안 된 변경이 있으면 저장하지 않는다 — 그 변경을 이 계정의 저장으로 "승인"해 버리지 않게.
       const saver = memberByGithub(login, members);
       if (!access.admin && !ADMIN_ROLES.has(saver?.role)) throw new Error(`봇이 저장에 쓰는 GitHub 계정(${login})은 저장소 관리자이거나 관리자 팀원이어야 합니다.`);
-      if (!trusted?.has(`${mf.sha}:${sha}`)) {
-        const v = await github.verifiedSha();
-        if (!v) throw new Error('GitHub Actions 의 확인 상태를 알 수 없어 저장을 멈췄어요. 잠시 뒤 다시 해 주세요.');
-        if ((await github.readFile(MEMBERS_FILE, v)).sha !== mf.sha || (await github.readFile(DB_FILE, v)).sha !== sha) {
-          throw new Error('main 에 아직 확인되지 않은 변경이 있어 저장을 멈췄어요(다른 곳에서 방금 저장한 내용을 처리 중이거나 관리자 확인이 필요). 1분쯤 뒤 다시 해 주세요.');
-        }
-      }
+      const v = await github.verifiedSha();
+      if (!v) throw new Error('GitHub Actions 의 확인 상태를 알 수 없어 저장을 멈췄어요. 잠시 뒤 다시 해 주세요.');
+      const ok = ((await github.readFile(MEMBERS_FILE, v)).sha === mf.sha && (await github.readFile(DB_FILE, v)).sha === sha)
+        || await trustedHead(github, head, trusted, v);
+      if (!ok) throw new Error('main 에 아직 확인되지 않은 변경이 있어 저장을 멈췄어요(다른 곳에서 방금 저장한 내용을 처리 중이거나 관리자 확인이 필요). 1분쯤 뒤 다시 해 주세요.');
     }
     const actor = as ? members.find((m) => m.id === as) || null : memberByGithub(login, members);
     if (!actor) throw new Error(as ? `명부에 없는 팀원입니다: ${as}` : `GitHub 계정 ${login} 이 팀원 명부(members.json 의 github)에 없습니다. 대표관리자에게 등록을 요청하세요.`);
@@ -739,10 +746,9 @@ export async function mutate(github, apply, describe, { as = null, via = null, t
     const errs = validateDb(db, members);
     if (errs.length) throw new Error(`저장하지 않았습니다(검사 실패): ${errs.join(' · ')}`);
     const save = github.commitFile ? (body, msg) => github.commitFile(head, DB_FILE, body, msg) : (body, msg) => github.writeFile(DB_FILE, body, sha, msg);
-    const body = `${JSON.stringify(db, null, 2)}\n`;
-    const w = await save(body, `미믹노트: ${describe(result, actor)} (by ${actor.name}·${via ? `${via}, ${login} 계정으로 저장` : login})`);
+    const w = await save(`${JSON.stringify(db, null, 2)}\n`, `미믹노트: ${describe(result, actor)} (by ${actor.name}·${via ? `${via}, ${login} 계정으로 저장` : login})`);
     if (w.conflict) continue;
-    return { ...w, result, db, members, actor, attempt, membersSha: mf.sha, body };
+    return { ...w, result, db, members, actor, attempt, parent: head };
   }
   throw new Error('다른 사람이 동시에 미션을 바꾸고 있어 3번 모두 충돌했습니다. 잠시 뒤 다시 시도하세요(강제로 덮어쓰지 않았습니다).');
 }

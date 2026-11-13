@@ -13,7 +13,9 @@
 // 신뢰 규칙
 // - 보낸 사람은 텔레그램 연결(일회용 코드로 만든 chat id ↔ 팀원)로만 확인한다. 역할·미션은 GitHub Actions 가 "확인한 상태"
 //   (MIMIC_VERIFIED)에서 읽는다 — 확인 안 된 변경(권한 없는 수정 등)은 보여 주지도, 근거로 쓰지도 않는다.
-//   예외: 이 봇이 이번 실행에서 직접 저장한 내용(확인된 상태 위에서만 저장)은 Actions 확인 전이라도 이어서 쓴다(연달아 누르기).
+//   예외: main 이 이 봇이 이번 실행에서 직접 만든 커밋(확인된 상태 위에서만 저장)이면 Actions 확인 전이라도 이어서 쓴다(연달아 누르기).
+//   내용이 아니라 커밋으로 믿으므로, 같은 내용으로 되돌린(revert) 남의 push 는 믿지 않는다.
+// - 봇이 꺼져 있는 동안 누른 버튼은 텔레그램이 24시간 보관했다가 봇이 켜지면 처리된다(수락·거절은 그때 바로 저장).
 // - 저장은 이 컴퓨터의 gh 계정(저장소 관리자이거나 관리자 팀원)으로 하고, 권한은 누른 팀원의 역할로 본다.
 // - 같은 봇은 한 컴퓨터에서만 켠다. 토큰·chat id 는 출력하지 않는다.
 import fs from 'node:fs';
@@ -23,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import {
   NOTE_DIR, loadMembers, readEnv, telegramApi, validateDb, validateMembers, esc, BOT_NAME, menuKeyboard, menuText, missionsText,
   ownersFromEnv, decide, confirmText, resolveRefs, boardText, boardKeyboard, teamText, sentText, decideCallback, composePrompt,
-  requestNotice, respondNotice, respondRequest, ACTIONS, resultText,
+  requestNotice, respondNotice, respondRequest, ACTIONS, resultText, trustedHead,
 } from './lib.mjs';
 import { processUpdates, applyLink, loadCodes, secretNames } from './telegram.mjs';
 import { mutate } from './mission.mjs';
@@ -41,8 +43,6 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
 export function botRunningHere() {
   try { const { pid } = JSON.parse(fs.readFileSync(LOCK(), 'utf8')); return pid !== process.pid && alive(pid); } catch { return false; }
 }
-// git 의 blob id(= GitHub Contents API 의 sha) — 봇이 저장한 내용을 알아보는 데 쓴다
-export const blobSha = (text) => crypto.createHash('sha1').update(`blob ${Buffer.byteLength(text)}\0`).update(text).digest('hex');
 // 누른 버튼의 미션만 메시지에서 뺀다(처리한 요청 버튼이 남아 다시 눌리지 않게)
 export const withoutMission = (markup, missionId) => ({
   inline_keyboard: (markup?.inline_keyboard || []).map((row) => row.filter((b) => !String(b.callback_data || '').endsWith(`:${missionId}`))).filter((row) => row.length),
@@ -87,12 +87,16 @@ async function main() {
     }
     return memo.get(k);
   };
-  const trusted = new Set(); // 이 봇이 직접 저장한 내용(`명부 blob:미션 blob`)
-  const state = () => {
+  const trusted = new Map(); // 이 봇이 이번 실행에서 만든 커밋 → 그 부모(core.mjs trustedHead)
+  const blobs = { readFile: (f, ref) => ({ sha: read(f, ref).sha }) };
+  const state = async () => {
     let sha = verifiedSha();
     if (trusted.size) {
-      const h = github.headSha();
-      if (h !== sha && trusted.has(`${read(MEMBERS_FILE, h).sha}:${read(DB_FILE, h).sha}`)) sha = h;
+      // main 이 봇이 방금 만든 커밋이면 그걸 보여 준다(연달아 누르기). 확인이 안 되거나 오류면 확인된 상태로.
+      try {
+        const h = github.headSha();
+        if (h !== sha && await trustedHead(blobs, h, trusted, sha)) sha = h;
+      } catch { /* 확인된 상태로 */ }
     }
     const members = read(MEMBERS_FILE, sha).json.members;
     const db = read(DB_FILE, sha).json;
@@ -102,8 +106,8 @@ async function main() {
   const save = async (apply, describe, as) => {
     const w = await mutate(github, apply, describe, { as, via: '텔레그램', trusted });
     if (w.commit) {
-      trusted.add(`${w.membersSha}:${blobSha(w.body)}`);
-      if (trusted.size > 50) trusted.delete(trusted.values().next().value);
+      trusted.set(w.commit, w.parent);
+      if (trusted.size > 50) trusted.delete(trusted.keys().next().value);
     }
     verified.at = 0; // 다음 버튼은 새 확인 상태를 보게
     return w;
@@ -174,7 +178,7 @@ async function main() {
           }
           const viewerId = chatOwners.get(replyTo);
           if (!viewerId) { await answer('먼저 관리자에게 받은 본인 연결 링크로 연결해 주세요.'); continue; }
-          const { members, db } = state();
+          const { members, db } = await state();
           const viewer = members.find((m) => m.id === viewerId) || null;
           const d = decideCallback(data, { viewer, members, db });
           if (d.kind === 'stale' || d.kind === 'pending') { await answer(d.text || '이미 처리했거나 만료된 버튼이에요.'); continue; }
@@ -184,8 +188,7 @@ async function main() {
           } else if (d.kind === 'compose') {
             await answer();
             compose.set(replyTo, { target: d.target, at: Date.now() });
-            const pr = composePrompt(d.target, d.mode);
-            await send(replyTo, pr.text, { reply_markup: pr.reply_markup });
+            await send(replyTo, composePrompt(d.target, d.mode));
           } else if (d.kind === 'confirm-done') {
             await answer();
             await ask(replyTo, String(cq.from?.id), { action: 'done', owner: viewer, target: d.target }, d.picked);
@@ -228,7 +231,7 @@ async function main() {
           } else await send(replyTo, menuText(null), { reply_markup: menuKeyboard(localMembers) });
           continue;
         }
-        const { members, db } = state();
+        const { members, db } = await state();
         const c = compose.get(replyTo);
         const active = c && Date.now() - c.at < PENDING_MS ? { target: members.find((m) => m.id === c.target.id) || c.target } : null;
         const d = decide(msg, { members, chatOwners, compose: active });
@@ -252,6 +255,7 @@ async function main() {
         }
       } catch (e) {
         console.log(`처리 실패: ${e.message}`);
+        if (u.callback_query) await telegramApi(token, 'answerCallbackQuery', { callback_query_id: u.callback_query.id }).catch(() => {}); // 버튼 로딩 표시를 끝낸다
         if (replyTo) await send(replyTo, `지금 처리하지 못했어요(${esc(e.message)}). 잠시 뒤 다시 해 주세요.`).catch(() => {});
       }
     }

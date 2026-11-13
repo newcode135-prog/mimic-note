@@ -2,18 +2,15 @@
 // 가짜 GitHub·git·텔레그램만 쓴다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import {
   openMissions, pendingRequests, addMissions, setMissions, completeMissions, requestMissions, respondRequest, validateDb, sendMode,
   decide, decideCallback, boardText, boardKeyboard, listKeyboard, teamText, sentText, renderTelegram, requestNotice, respondNotice,
-  resultText, ACTIONS, REQUEST_LIMIT, menuText, composePrompt,
+  resultText, ACTIONS, REQUEST_LIMIT, menuText, composePrompt, trustedHead,
 } from '../mimic-note/lib.mjs';
 import { mutate } from '../mimic-note/mission.mjs';
 import { runNotify } from '../mimic-note/notify.mjs';
-import { blobSha, withoutMission } from '../mimic-note/bot.mjs';
-import { fakeGithub, fakeGit, fakeTelegram, DB_FILE, MEMBERS_FILE } from './mimic-note-fakes.js';
+import { withoutMission } from '../mimic-note/bot.mjs';
+import { fakeGit, fakeTelegram, DB_FILE, MEMBERS_FILE, sha1 } from './mimic-note-fakes.js';
 
 const T = '2026-11-13T00:00:00.000Z';
 const M = [
@@ -81,6 +78,11 @@ test('요청 수락·거절: 수락은 관리자만(목록 맨 뒤로), 거절�
   assert.deepEqual(validateDb(db, M), []);
   completeMissions(db, 'minho', [req.id], { by: 'minho', members: M }, T);
   assert.equal(req.status, 'done', '수락한 요청은 보통 미션처럼 완료');
+  // 요청이 대기 중일 때 관리자가 같은 제목을 따로 주면, 수락하지 않고 거절하게 한다(같은 미션 두 개 방지)
+  const dup = requestMissions(db, 'yuri', it('보고서 검토'), 'nathan', M, T).added[0];
+  addMissions(db, 'yuri', it('보고서 검토'), 'changmin', M, {}, T);
+  assert.throws(() => respondRequest(db, dup.id, true, 'yuri', M, T), /같은 제목의 미션이 있어요/);
+  assert.equal(respondRequest(db, dup.id, false, 'yuri', M, T).mission.status, 'declined');
 });
 
 // ---------------- 봇 판단(글·버튼) ----------------
@@ -163,50 +165,95 @@ test('팀 현황·보낸 미션·요청/결과 알림·확인 결과 문구', ()
   assert.equal(resultText('add', '민호', { unchanged: true, result: {} }), '변경 없음 — 민호님에게 이미 그대로 있어요.');
   assert.match(menuText(NATHAN, M), /관리자\(창민·민호·유리\)에게는 <b>📨 미션 요청<\/b>/);
   assert.match(menuText(MINHO, M), /📨 미션 주기/);
-  assert.deepEqual(composePrompt(CHANGMIN, 'add').reply_markup.force_reply, true);
+  assert.match(composePrompt(CHANGMIN, 'add'), /<b>창민<\/b>님에게 줄 미션을 이 대화에 적어/);
+  assert.equal(typeof composePrompt(MINHO, 'request'), 'string', '답장 강제(force_reply) 없음 — 이름 버튼판이 사라지지 않게');
   assert.deepEqual(withoutMission(n.reply_markup, req.id), { inline_keyboard: [] }, '처리한 요청 버튼은 메시지에서 뺌');
 });
 
 // ---------------- 저장(봇) ----------------
 
-function tempNote() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mimic-note-app-'));
-  fs.mkdirSync(path.join(dir, 'data'));
-  fs.writeFileSync(path.join(dir, 'data', 'members.json'), JSON.stringify({ members: M }, null, 2));
-  fs.writeFileSync(path.join(dir, 'data', 'missions.json'), JSON.stringify(empty()));
-  return dir;
+// 커밋 단위로 기록하는 가짜 GitHub — main 이 어느 커밋인지, 커밋마다 파일 내용, Actions 가 확인한 커밋
+function commitGithub(members = M) {
+  const commits = new Map();
+  let head = 'c'.repeat(40);
+  commits.set(head, { files: { [MEMBERS_FILE]: JSON.stringify({ members }, null, 2), [DB_FILE]: `${JSON.stringify(empty(), null, 2)}\n` }, parent: null });
+  const gh = {
+    verified: head,
+    whoami: () => 'newcode135-prog',
+    access: () => ({ push: true, admin: true }),
+    headSha: () => head,
+    verifiedSha: () => gh.verified,
+    readFile: (f, ref = 'main') => { const t = commits.get(ref === 'main' ? head : ref).files[f]; return { text: t, sha: sha1(`blob ${t}`) }; },
+    commitFile(parent, f, text, message) {
+      if (parent !== head) return { conflict: true };
+      const sha = sha1(`${parent}:${text}:${message}`);
+      commits.set(sha, { files: { ...commits.get(parent).files, [f]: text }, parent, message });
+      head = sha;
+      return { commit: sha };
+    },
+    push(files) { // 봇이 아닌 push(Claude Code·직접 수정·revert)
+      const sha = sha1(`push-${commits.size}`);
+      commits.set(sha, { files: { ...commits.get(head).files, ...files }, parent: head });
+      head = sha;
+      return sha;
+    },
+    reset: (sha) => { head = sha; }, // force push
+    files: (sha) => commits.get(sha).files,
+    message: (sha) => commits.get(sha).message,
+    db: () => JSON.parse(commits.get(head).files[DB_FILE]),
+  };
+  return gh;
 }
 
-test('봇 저장: 요청·수락을 텔레그램 팀원 이름으로 기록, 봇이 방금 저장한 내용 위에서는 Actions 확인 전에도 이어서 저장', async () => {
-  const dir = tempNote();
-  const github = fakeGithub({ dir, login: 'newcode135-prog' });
-  github.access = () => ({ push: true, admin: true });
-  const trusted = new Set();
-  const save = async (spec, as) => {
-    const w = await mutate(github, spec, () => 'test', { as, via: '텔레그램', trusted });
-    if (w.commit) trusted.add(`${w.membersSha}:${blobSha(w.body)}`);
+test('봇 저장: 요청·수락을 누른 팀원 이름으로 기록, 봇이 방금 만든 커밋 위에서는 Actions 확인 전에도 이어서 저장', async () => {
+  const gh = commitGithub();
+  const c0 = gh.headSha();
+  const trusted = new Map();
+  const save = async (apply, as) => {
+    const w = await mutate(gh, apply, () => 'test', { as, via: '텔레그램', trusted });
+    if (w.commit) trusted.set(w.commit, w.parent);
     return w;
   };
   const w1 = await save(ACTIONS.request.apply({ targetId: 'minho', items: it('회의록 정리') }), 'nathan');
-  assert.equal(blobSha(w1.body), github.store.get(DB_FILE).sha, '봇이 기억하는 내용 = GitHub 가 돌려주는 sha');
-  // 이제 main(봇이 저장한 내용) ≠ Actions 가 확인한 상태 — 봇이 저장한 내용이므로 이어서 수락 저장 가능
-  github.atVerified = { [DB_FILE]: { text: '', sha: 'older' } };
+  assert.equal(w1.parent, c0);
+  assert.match(gh.message(w1.commit), /\(by 네이뜬·텔레그램, newcode135-prog 계정으로 저장\)$/);
+  // Actions 는 아직 c0 만 확인 — 하지만 main 이 봇이 만든 커밋이라 이어서 수락 저장 가능(연달아 누르기)
   const id = w1.result.added[0].id;
   const w2 = await save((db, ms, actor) => respondRequest(db, id, true, actor.id, ms), 'minho');
-  assert.ok(w2.commit);
-  const saved = JSON.parse(github.store.get(DB_FILE).text).missions.find((m) => m.id === id);
+  assert.deepEqual([w2.parent, trusted.get(w2.commit)], [w1.commit, w1.commit]);
+  const saved = gh.db().missions.find((m) => m.id === id);
   assert.deepEqual([saved.status, saved.createdBy, saved.acceptedBy], ['todo', 'nathan', 'minho']);
-  assert.match(github.commits[0].message, /\(by 네이뜬·텔레그램, newcode135-prog 계정으로 저장\)$/);
-  // 남이 끼어들어 main 내용이 봇이 저장한 것과 다르면 다시 확인된 상태만 믿는다
-  github.put(DB_FILE, `${github.store.get(DB_FILE).text.trimEnd()} \n`);
+  // 권한은 누른 팀원 기준(봇 커밋 위라도)
+  await assert.rejects(save(ACTIONS.request.apply({ targetId: 'lucas', items: it('C') }), 'nathan'), /팀원끼리는/);
+  // 봇이 아닌 push 가 끼어들면(확인 전) 저장하지 않는다
+  gh.push({ [DB_FILE]: `${gh.files(gh.headSha())[DB_FILE].trimEnd()} \n` });
   await assert.rejects(save(ACTIONS.request.apply({ targetId: 'yuri', items: it('B') }), 'nathan'), /확인되지 않은 변경/);
-  await assert.rejects(mutate(github, ACTIONS.request.apply({ targetId: 'lucas', items: it('C') }), () => 't', { as: 'nathan', trusted: new Set([`${w2.membersSha}:${github.store.get(DB_FILE).sha}`]) }), /팀원끼리는/, '권한은 누른 팀원 기준');
 });
 
-test('blobSha 는 git blob id 와 같다(GitHub Contents API 의 sha)', () => {
-  assert.equal(blobSha('hello\n'), 'ce013625030ba8dba906f756967f9e9ca394464a');
-  assert.equal(blobSha('미믹'), blobSha('미믹'));
-  assert.notEqual(blobSha('a'), blobSha('b'));
+test('리뷰 회귀: 예전 봇 저장과 같은 내용으로 되돌린(revert) push 나 force push 는 봇이 믿지도, 승인하지도 않는다', async () => {
+  const gh = commitGithub();
+  const trusted = new Map();
+  const save = async (apply, as) => {
+    const w = await mutate(gh, apply, () => 'test', { as, via: '텔레그램', trusted });
+    if (w.commit) trusted.set(w.commit, w.parent);
+    return w;
+  };
+  const give = (title) => ACTIONS.add.apply({ targetId: 'lucas', items: it(title) });
+  const w1 = await save(give('X'), 'minho');
+  const w2 = await save(give('Y'), 'minho');
+  gh.verified = w2.commit; // Actions 가 확인
+  // 루카스가 Y 를 지우려고 w1 내용으로 되돌려 push(대표관리자만 삭제 가능 → Actions 는 막고 확인 상태는 w2 그대로)
+  gh.push({ [DB_FILE]: gh.files(w1.commit)[DB_FILE] });
+  assert.equal(await trustedHead(gh, gh.headSha(), trusted, gh.verified), false, '같은 내용이어도 봇이 만든 커밋이 아님');
+  await assert.rejects(save(give('Z'), 'minho'), /확인되지 않은 변경/, '되돌린 상태 위에 저장해 승인하지 않음');
+  // force push 로 main 을 예전 봇 커밋(w1)으로 되돌려도, 그 아래 바탕(c0)이 지금 확인된 상태(w2)와 달라 믿지 않는다
+  gh.reset(w1.commit);
+  assert.equal(await trustedHead(gh, w1.commit, trusted, gh.verified), false);
+  await assert.rejects(save(give('Z'), 'minho'), /확인되지 않은 변경/);
+  // 정상: main 이 확인된 w2 로 돌아오면 다시 저장 가능
+  gh.reset(w2.commit);
+  assert.ok((await save(give('Z'), 'minho')).commit);
+  assert.equal(await trustedHead(gh, gh.headSha(), trusted, gh.verified), true, '확인된 w2 위의 봇 커밋');
 });
 
 // ---------------- Actions 알림 ----------------
