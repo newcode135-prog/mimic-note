@@ -1,5 +1,5 @@
 {
-  "nextId": 31,
+  "nextId": 33,
   "missions": [
     {
       "id": "M-0001",
@@ -348,6 +348,28 @@
       "status": "todo",
       "createdBy": "minho",
       "createdAt": "2026-11-13T09:37:53.310Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0031",
+      "assignee": "yuri",
+      "order": 6,
+      "title": "미션 보내줘",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T10:17:01.812Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0032",
+      "assignee": "yuri",
+      "order": 7,
+      "title": "완료라고",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T10:17:01.812Z",
       "doneAt": null
     }
   ]
