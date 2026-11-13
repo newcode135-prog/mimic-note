@@ -116,6 +116,7 @@ async function main() {
     return memo.get(k);
   };
   const trusted = bs.trusted; // 이 봇이 만든 커밋 → 그 부모(core.mjs safeHead)
+  let lastLangs = {}; // 마지막으로 읽은 팀원별 언어 — GitHub 를 읽기 전에 보내는 문구(만료 버튼·오류)도 그 사람 언어로
   const state = async () => {
     let sha = verifiedSha();
     if (trusted.size) {
@@ -128,6 +129,7 @@ async function main() {
     const members = read(MEMBERS_FILE, sha).json.members;
     const db = read(DB_FILE, sha).json;
     if (validateMembers(members).length || validateDb(db, members).length) throw new Error('확인된 데이터가 올바르지 않아요');
+    lastLangs = db.langs || {};
     return { members, db };
   };
   const save = async (apply, describe, as) => {
@@ -172,7 +174,7 @@ async function main() {
       const chatOwners = ownersFromEnv(env);
       const chatOf = (memberId) => { for (const [chat, id] of chatOwners) if (id === memberId) return chat; return null; };
       const replyTo = String(u.message?.chat?.id || u.callback_query?.message?.chat?.id || '');
-      let lang = chatOwners.has(replyTo) ? 'ko' : guessLang(u.message?.from?.language_code || u.callback_query?.from?.language_code);
+      let lang = chatOwners.has(replyTo) ? langOf({ langs: lastLangs }, chatOwners.get(replyTo)) : guessLang(u.message?.from?.language_code || u.callback_query?.from?.language_code);
       try {
         if (u.callback_query) {
           const cq = u.callback_query;
@@ -269,11 +271,11 @@ async function main() {
             const codes = loadCodes();
             const r = processUpdates([u], { codes, chatOwners, now: Date.now() });
             for (const l of r.links) {
-              const { member } = await applyLink(l, { members: localMembers, codes, token });
+              const { member } = await applyLink(l, { members: localMembers, codes, token, lang });
               await send(l.chatId, menuText(member, localMembers, { lang }), { reply_markup: menuKeyboard(localMembers, lang) });
               await send(l.chatId, tr(lang).langPrompt, { reply_markup: langKeyboard() }); // 처음 연결하면 언어부터 고르게
             }
-            for (const x of r.replies) await send(x.chatId, esc(x.text));
+            for (const x of r.replies) await send(x.chatId, esc(x.key ? tr(lang)[x.key] : x.text));
           } else await send(replyTo, menuText(null, [], { lang }), { reply_markup: menuKeyboard(localMembers, lang) });
           continue;
         }
@@ -303,7 +305,7 @@ async function main() {
         else if (d.kind === 'act') {
           let picked = [];
           if (d.action === 'done') {
-            try { picked = resolveRefs(db, d.target.id, d.refs); } catch (e) { await send(d.chatId, esc(e.message)); continue; }
+            try { picked = resolveRefs(db, d.target.id, d.refs); } catch (e) { await send(d.chatId, esc(e.ref != null ? t.notFound(e.ref, e.left) : e.message)); continue; }
           }
           await ask(d.chatId, String(msg.from?.id), d, picked, lang);
         }

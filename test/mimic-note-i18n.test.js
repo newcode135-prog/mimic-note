@@ -4,8 +4,9 @@ import assert from 'node:assert/strict';
 import {
   addMissions, completeMissions, requestMissions, validateDb, setLang, langOf, renderTelegram, renderDoneNotice, menuKeyboard, menuText,
   boardText, boardKeyboard, listKeyboard, teamText, sentText, requestNotice, respondNotice, decide, decideCallback, confirmText, resultText,
-  composePrompt, langKeyboard, pendingRequests, tr, dn, guessLang, LANGS,
+  composePrompt, langKeyboard, pendingRequests, tr, dn, guessLang, LANGS, resolveRefs,
 } from '../mimic-note/lib.mjs';
+import { processUpdates } from '../mimic-note/telegram.mjs';
 import { runNotify, verifyChange } from '../mimic-note/notify.mjs';
 import { fakeGit, fakeTelegram, DB_FILE, MEMBERS_FILE } from './mimic-note-fakes.js';
 
@@ -83,7 +84,7 @@ test('영어·중국어 화면: 목록·이름봇·버튼판·팀 현황·보낸
   assert.equal(boardKeyboard(NATHAN, MINHO, db).inline_keyboard[0][0].text, '📨 Request a mission from Minho');
   assert.equal(listKeyboard(db, 'nathan').inline_keyboard.at(-1)[0].text, '🔄 Refresh', 'Actions 목록 버튼도 그 사람 언어');
   assert.match(boardText(NATHAN, LUCAS, db, M), /👀 View only\. Members can't give each other missions/);
-  assert.match(teamText(M, db, new Set(['minho']), 'en'), /• <b>Minho<\/b> — 0 left · 0 done · 📨 1 requests\n[\s\S]*<b>Nathan<\/b> — 2 left · 0 done · <i>Telegram not linked<\/i>/);
+  assert.match(teamText(M, db, new Set(['minho']), 'en'), /• <b>Minho<\/b> — 0 left · 0 done · 📨 1 request\n[\s\S]*<b>Nathan<\/b> — 2 left · 0 done · <i>Telegram not linked<\/i>/);
   assert.match(sentText(NATHAN, M, db), /📤 <b>Sent missions<\/b>[\s\S]*⏳ Waiting for acceptance 1<\/b>\n• Minho — 리뷰 부탁/);
   // 요청·결과 알림(받는 사람의 언어)
   const req = pendingRequests(db, 'minho')[0];
@@ -92,8 +93,8 @@ test('영어·중국어 화면: 목록·이름봇·버튼판·팀 현황·보낸
   assert.deepEqual(n.reply_markup.inline_keyboard[0].map((b) => b.text), ['✅ 接受 1', '❌ 拒绝 1']);
   assert.match(respondNotice(req, true, MINHO, MINHO, 'en'), /✅ <b>Minho accepted your mission request<\/b>\n• 리뷰 부탁\n\nIt's now Minho's mission/);
   assert.match(composePrompt(MINHO, 'request', 'en'), /Type the mission to request from <b>Minho<\/b>/);
-  assert.match(confirmText({ action: 'request', target: MINHO, items: it('리뷰 부탁') }, [], 'zh'), /📨 要向 <b>Minho<\/b> 请求这个任务吗？/);
-  assert.match(resultText('add', 'Lucas', { result: { added: [{ id: 'M-0009', title: 'X' }], skipped: [] } }, 'en'), /✅ Gave Lucas a mission\n• \[M-0009\] X\n\nLucas will get a Telegram notice shortly\./);
+  assert.match(confirmText({ action: 'request', target: MINHO, items: it('리뷰 부탁') }, [], 'zh'), /📨 要向 <b>Minho<\/b> 请求以下任务吗？/);
+  assert.match(resultText('add', 'Lucas', { result: { added: [{ id: 'M-0009', title: 'X' }], skipped: [] } }, 'en'), /✅ Sent to Lucas:\n• \[M-0009\] X\n\nLucas will get a Telegram notice shortly\./);
 });
 
 test('봇 판단: 세 언어의 버튼·명령을 모두 알아듣고, 안내는 보낸 사람 언어로', () => {
@@ -166,10 +167,50 @@ test('Actions 알림: 각자 고른 언어로(새 미션·버튼·완료 알림)
   assert.deepEqual(verifyChange({ base, head, actor: 'newcode135-prog' }), [], '관리자는 됨');
 });
 
+test('리뷰 회귀: 중국어 보통 문장은 명령이 아니다(任务设置页面…), 완료 번호는 、，로도, 못 찾으면 그 사람 언어로', () => {
+  const chatOwners = new Map([['1002', 'minho'], ['1005', 'lucas']]);
+  const d = (id, text, lang = 'zh') => decide({ chat: { id, type: 'private' }, text }, { members: M, chatOwners, lang });
+  const plain = (t) => { const r = d(1002, t); return [r.action, r.items?.[0]?.title]; };
+  assert.deepEqual(plain('Lucas 任务设置页面有问题，帮忙看一下'), ['add', '任务设置页面有问题，帮忙看一下'], '목록 바꾸기(set)로 읽지 않음');
+  assert.deepEqual(plain('Lucas 任务添加功能有bug'), ['add', '任务添加功能有bug'], '제목을 자르지 않음');
+  assert.deepEqual(plain('Lucas 任务完成后告诉我'), ['add', '任务完成后告诉我']);
+  assert.equal(d(1005, 'Minho 任务设置页面有问题').action, 'request', '팀원은 거절 대신 요청');
+  assert.deepEqual([d(1002, 'Lucas 任务完成 2、3').refs, d(1002, 'Lucas 任务完成 2，3').refs, d(1002, 'Lucas mission done 2, 3', 'en').refs], [['2', '3'], ['2', '3'], ['2', '3']]);
+  assert.deepEqual([d(1002, 'Lucas 任务设置\n1. A\n2. B').action, d(1002, 'Lucas 任务添加 修复登录').items[0].title], ['set', '修复登录']);
+  const db = empty();
+  addMissions(db, 'lucas', it('A'), 'minho', M, {}, T);
+  let err;
+  try { resolveRefs(db, 'lucas', ['9']); } catch (e) { err = e; }
+  assert.match(err.message, /미션을 찾지 못했어요: 9 \(남은 미션 번호: 1\)/, '한국어 문구는 그대로');
+  assert.deepEqual([tr('en').notFound(err.ref, err.left), tr('zh').notFound('9', '')], ["Couldn't find mission 9 (remaining numbers: 1)", '找不到任务：9（剩余编号：无）']);
+});
+
+test('리뷰 회귀: 영어 단수·복수, 여러 개에도 맞는 머리말, 연결 안내도 그 사람 언어로', () => {
+  const db = empty();
+  addMissions(db, 'nathan', it('A', 'B', 'C', 'D'), 'minho', M, {}, T);
+  requestMissions(db, 'minho', it('R'), 'nathan', M, T);
+  const en = renderTelegram(NATHAN, db, { lang: 'en' });
+  assert.match(en, /➕ 1 more mission \(tap to expand\)/);
+  assert.match(en, /📌 4 missions left$/);
+  assert.match(renderTelegram(LUCAS, db, { lang: 'en' }), /📌 0 missions left$/);
+  completeMissions(db, 'nathan', ['1', '2', '3'], { by: 'nathan', members: M }, T);
+  assert.match(renderTelegram(NATHAN, db, { lang: 'en' }), /📌 1 mission left$/);
+  assert.match(boardText(MINHO, MINHO, db, M, 'en'), /📨 <b>1 request received<\/b> \(accepting makes it your mission\)/);
+  assert.match(teamText(M, db, null, 'en'), /<b>Minho<\/b> — 0 left · 0 done · 📨 1 request\n/);
+  assert.match(renderDoneNotice(NATHAN, ['A', 'B'], db, M, 'en'), /👤 Nathan completed:\n• A\n• B/);
+  assert.match(confirmText({ action: 'add', target: LUCAS, items: it('A', 'B') }, [], 'en'), /^📝 Give <b>Lucas<\/b> the following\?\n• A\n• B/);
+  assert.match(confirmText({ action: 'add', target: LUCAS, items: it('A', 'B') }, [], 'zh'), /^📝 要把以下任务分配给 <b>Lucas<\/b> 吗？/);
+  // 연결 안내: 문구 키를 달아 봇이 그 사람 언어로 보낸다(CLI 연결은 한국어 text 그대로)
+  const r = processUpdates([{ message: { chat: { id: 7, type: 'private' }, text: '/start' } }], { codes: {}, chatOwners: new Map(), now: 0 });
+  assert.equal(r.replies[0].key, 'linkNeedCode');
+  assert.match(r.replies[0].text, /본인 연결 링크/);
+  assert.match(tr('en')[r.replies[0].key], /personal link/);
+});
+
 test('완료 알림은 받는 사람(미션을 준 사람)의 언어로', () => {
   const db = empty();
   addMissions(db, 'nathan', it('A'), 'minho', M, {}, T);
   completeMissions(db, 'nathan', ['1'], { by: 'minho', members: M }, T);
-  assert.match(renderDoneNotice(NATHAN, [{ title: 'A', doneBy: 'minho' }], db, M, 'en'), /✅ <b>MIMIC NOTE — mission completed<\/b>\n\n👤 Nathan completed a mission\n• A \(marked done by Minho\)\n\n📊 Nathan's progress 1\/1 · 0 left/);
+  assert.match(renderDoneNotice(NATHAN, [{ title: 'A', doneBy: 'minho' }], db, M, 'en'), /✅ <b>MIMIC NOTE — mission completed<\/b>\n\n👤 Nathan completed:\n• A \(marked done by Minho\)\n\n📊 Nathan's progress 1\/1 · 0 left/);
   assert.match(renderDoneNotice(NATHAN, ['A'], db, M, 'zh'), /👤 Nathan 完成了任务\n• A\n\n📊 Nathan 的进度 1\/1 · 剩余 0 个/);
 });

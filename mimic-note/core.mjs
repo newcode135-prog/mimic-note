@@ -660,7 +660,10 @@ function parseItems(chatId, text, t) {
 
 // 버튼 이름·명령 낱말은 세 언어 모두 알아듣는다(언어를 바꾼 직후 예전 버튼판을 눌러도 되게)
 const BOT_BTN = [/^(\S+?)\s*봇$/, /^(\S+?)\s+bot$/i, /^(\S+?)\s*机器人$/];
-const KEYWORDS = [/^미션\s*(설정|추가|완료)\s*([\s\S]*)$/, /^mission\s+(set|add|done)(?=\s|$)\s*([\s\S]*)$/i, /^任务\s*(设置|添加|完成)\s*([\s\S]*)$/];
+// 중국어는 띄어쓰기가 없어 "任务设置页面有问题"(설정 화면 문제) 같은 보통 문장과 겹친다 → 설정·추가는 뒤에 띄어쓰기·줄바꿈이 있을 때만,
+// 완료는 뒤가 번호(·미션 ID)뿐일 때만 명령으로 본다.
+const KEYWORDS = [/^미션\s*(설정|추가|완료)\s*([\s\S]*)$/, /^mission\s+(set|add|done)(?=\s|$)\s*([\s\S]*)$/i,
+  /^任务\s*(设置|添加)(?=\s|$)\s*([\s\S]*)$/, /^任务\s*(完成)\s*((?:M-\d{4,}|\d{1,3})(?:[\s,，、]+(?:M-\d{4,}|\d{1,3}))*)\s*$/i];
 const KW_ACTION = { 설정: 'set', 추가: 'add', 완료: 'done', set: 'set', add: 'add', done: 'done', 设置: 'set', 添加: 'add', 完成: 'done' };
 
 // 받은 메시지 하나를 어떻게 처리할지(순수 함수 — 테스트 대상). chatOwners: Map(chatId → 팀원 아이디)
@@ -708,7 +711,7 @@ export function decide(msg, { members, chatOwners, compose = null, lang = 'ko' }
   const rest = kw ? kw[2] : m[2];
   const admin = ADMIN_ROLES.has(owner.role);
   if (action === 'done') {
-    const refs = rest.split(/[\s,]+/).filter(Boolean);
+    const refs = rest.split(/[\s,，、]+/).filter(Boolean);
     if (!refs.length) return { kind: 'act-error', chatId, error: t.needNumber(dn(target, lang)) };
     if (target.id !== owner.id && !admin) return { kind: 'act-denied', chatId, owner, action, text: t.deniedDoneOthers };
     return { kind: 'act', action, chatId, owner, target, refs };
@@ -755,7 +758,8 @@ export function resolveRefs(db, memberId, refs) {
   return refs.map((r) => {
     const key = String(r).trim().toUpperCase();
     const m = /^\d+$/.test(key) ? open[Number(key) - 1] : open.find((x) => x.id === key);
-    if (!m) throw new Error(`미션을 찾지 못했어요: ${r} (남은 미션 번호: ${open.map((x, i) => i + 1).join(', ') || '없음'})`);
+    const left = open.map((x, i) => i + 1).join(', ');
+    if (!m) throw Object.assign(new Error(`미션을 찾지 못했어요: ${r} (남은 미션 번호: ${left || '없음'})`), { ref: String(r), left });
     return { id: m.id, title: m.title };
   });
 }

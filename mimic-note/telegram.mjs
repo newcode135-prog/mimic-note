@@ -18,7 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { NOTE_DIR, REPO, loadMembers, requireMember, readEnv, chatIdFor, telegramApi } from './lib.mjs';
+import { NOTE_DIR, REPO, loadMembers, requireMember, readEnv, chatIdFor, telegramApi, tr, dn } from './lib.mjs';
 import { HOME_DIR } from './passive/compress.mjs';
 import { createGithub, waitForNotify, formatNotify } from './github.mjs';
 
@@ -39,14 +39,14 @@ export function processUpdates(updates, { codes, chatOwners, now = Date.now() })
     const m = typeof msg?.text === 'string' && msg.text.trim().match(/^\/start(?:@\w+)?(?:\s+(\S+))?/);
     if (!m || !msg.chat) continue;
     const chatId = String(msg.chat.id);
-    if (msg.chat.type !== 'private') { replies.push({ chatId, text: '미믹노트 연결은 봇과의 개인 대화에서만 할 수 있어요.' }); continue; }
+    if (msg.chat.type !== 'private') { replies.push({ chatId, key: 'linkPrivate', text: '미믹노트 연결은 봇과의 개인 대화에서만 할 수 있어요.' }); continue; }
     // 코드 형식(16자)과 "자기 키"만 인정 — /start __proto__ 같은 입력으로 객체 기본값을 건드리지 못하게
     const c = /^[A-Za-z0-9_-]{16}$/.test(m[1] || '') && Object.hasOwn(codes, m[1]) ? codes[m[1]] : null;
-    if (!c) { replies.push({ chatId, text: '관리자에게 받은 본인 연결 링크로 다시 눌러 주세요. (/start 만으로는 연결되지 않아요)' }); continue; }
-    if (c.usedAt) { replies.push({ chatId, text: '이미 사용된 연결 링크예요. 관리자에게 새 링크를 요청하세요.' }); continue; }
-    if (Date.parse(c.expiresAt) <= now) { replies.push({ chatId, text: '만료된 연결 링크예요. 관리자에게 새 링크를 요청하세요.' }); continue; }
+    if (!c) { replies.push({ chatId, key: 'linkNeedCode', text: '관리자에게 받은 본인 연결 링크로 다시 눌러 주세요. (/start 만으로는 연결되지 않아요)' }); continue; }
+    if (c.usedAt) { replies.push({ chatId, key: 'linkUsed', text: '이미 사용된 연결 링크예요. 관리자에게 새 링크를 요청하세요.' }); continue; }
+    if (Date.parse(c.expiresAt) <= now) { replies.push({ chatId, key: 'linkExpired', text: '만료된 연결 링크예요. 관리자에게 새 링크를 요청하세요.' }); continue; }
     const owner = chatOwners.get(chatId);
-    if (owner && owner !== c.member) { replies.push({ chatId, text: '이 텔레그램 계정은 이미 다른 팀원으로 연결되어 있어요. 관리자에게 문의하세요.' }); continue; }
+    if (owner && owner !== c.member) { replies.push({ chatId, key: 'linkOther', text: '이 텔레그램 계정은 이미 다른 팀원으로 연결되어 있어요. 관리자에게 문의하세요.' }); continue; }
     c.usedAt = new Date(now).toISOString();
     chatOwners.set(chatId, c.member);
     links.push({ member: c.member, chatId, who: [msg.from?.first_name, msg.from?.last_name, msg.from?.username && `@${msg.from.username}`].filter(Boolean).join(' ') });
@@ -93,12 +93,12 @@ export function setSecret(name, value) {
 }
 
 // 연결 하나를 반영: .env + GitHub 비밀값 + 코드 저장 + 확인 메시지 + 지금 미션 발송 요청(Actions)
-export async function applyLink(l, { members, codes, token, log = console.log }) {
+export async function applyLink(l, { members, codes, token, log = console.log, lang = 'ko' }) {
   const m = members.find((x) => x.id === l.member);
   setEnvVar(ENV_FILE, secretName(m.id), l.chatId);
   const ok = setSecret(secretName(m.id), l.chatId);
   saveCodes(codes);
-  await telegramApi(token, 'sendMessage', { chat_id: l.chatId, text: ok ? `✅ 미믹노트 연결 완료 — ${m.name}님의 미션 알림이 이 대화로 와요.` : `✅ ${m.name}님 연결은 됐어요. 자동 알림 등록은 관리자 확인이 필요해요(그동안 버튼으로 미션을 받을 수 있어요).` }).catch(() => {});
+  await telegramApi(token, 'sendMessage', { chat_id: l.chatId, text: ok ? tr(lang).linked(dn(m, lang)) : `✅ ${m.name}님 연결은 됐어요. 자동 알림 등록은 관리자 확인이 필요해요(그동안 버튼으로 미션을 받을 수 있어요).` }).catch(() => {});
   log(`   ✅ ${m.name} 연결됨 — 텔레그램 이름: ${l.who || '(이름 없음)'}${ok ? ' · GitHub 비밀값 등록' : ' · GitHub 비밀값 등록은 실패(위 안내 참고)'}`);
   log('      본인이 맞는지 이름을 확인하세요. 아니면: node mimic-note/telegram.mjs connect --relink ' + m.id);
   if (ok) {
