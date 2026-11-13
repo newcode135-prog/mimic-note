@@ -34,12 +34,13 @@ test('이름·아이디·님 붙인 이름 모두 같은 팀원', () => {
   assert.equal(findMember('', members), null);
 });
 
-test('실제 데이터베이스: 민호님 체크인 시 미션 1·2·3번이 나온다', () => {
+// 실제 미션은 미션설정으로 계속 바뀌므로 제목을 고정하지 않고, 지금 데이터의 남은 미션이 1번부터 순서대로 나오는지 본다
+test('실제 데이터베이스: 민호님 체크인 시 남은 미션이 1번부터 순서대로 나온다', () => {
   const msg = buildMessage(findMember('민호', members));
-  assert.match(msg, /^민호님의 미션 1번은 텔레그램 봇 만들기/);
-  assert.match(msg, /민호님의 미션 2번은 봇에게 \/start 보내기/);
-  assert.match(msg, /민호님의 미션 3번은 토큰·chat id 전달하고 비밀값 등록/);
-  assert.match(msg, /BotFather/);
+  const open = openMissions(loadDb(), 'minho');
+  if (!open.length) return assert.match(msg, /남은 미션이 없습니다/);
+  assert.ok(msg.startsWith(`민호님의 미션 1번은 ${open[0].title}`));
+  open.forEach((m, i) => assert.ok(msg.includes(`민호님의 미션 ${i + 1}번은 ${m.title}`), `${i + 1}번 = ${m.title}`));
 });
 
 test('미션 추가는 관리자만, 번호는 담당자별로 1번부터', () => {
