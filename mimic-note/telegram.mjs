@@ -140,6 +140,10 @@ export async function askHidden(prompt) {
 async function connect(names, { relink = false, minutes = 10, wait = true } = {}) {
   const members = loadMembers();
   let env = readEnv(ROOT, process.env);
+  if (env.NOTE_RELAY_URL) { // 봇 서버(워커)를 쓰면 연결은 서버가 한다 — 여기서 만든 코드는 서버가 모름
+    console.log('봇 서버(클라우드플레어 워커)를 쓰는 중이라 연결 링크는 텔레그램 봇에서 만듭니다:\n  관리자가 봇에 "루카스 연결링크" (또는 /link 루카스) 를 보내면 24시간짜리 일회용 링크가 옵니다 → 그 사람에게만 전달.');
+    return;
+  }
   let token = env.TELEGRAM_BOT_TOKEN;
   let fresh = false;
   if (!token) {

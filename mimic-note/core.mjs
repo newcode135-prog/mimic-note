@@ -457,11 +457,13 @@ export async function mutate(github, apply, describe, { as = null, via = null } 
     throw new Error(`GitHub 계정 ${login} 은 ${REPO} 쓰기 권한이 없어 미션을 바꿀 수 없습니다. 초대를 수락했는지 확인하거나, 권한 있는 계정으로 gh auth switch 하세요.`);
   }
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const mf = await github.readFile(MEMBERS_FILE);
+    // 어댑터가 지원하면 main 의 지금 커밋(head)을 정해 두고 그 커밋에서 읽고, 그 커밋 위에만 저장한다(사이에 끼어든 변경을 끌어안지 않게)
+    const head = github.headSha ? await github.headSha() : 'main';
+    const mf = await github.readFile(MEMBERS_FILE, head);
     const members = JSON.parse(mf.text).members;
     const merr = validateMembers(members);
     if (merr.length) throw new Error(`팀원 명부(members.json)가 올바르지 않아 멈췄습니다: ${merr.join(' · ')}`);
-    const { text, sha } = await github.readFile(DB_FILE);
+    const { text, sha } = await github.readFile(DB_FILE, head);
     if (as) {
       // 봇 저장: 저장하는 gh 계정이 GitHub Actions 확인을 통과할 수 있어야 하고(저장소 관리자 또는 관리자 팀원),
       // main 에 확인 안 된 변경이 있으면 저장하지 않는다 — 그 변경을 이 계정의 저장으로 "승인"해 버리지 않게.
@@ -482,7 +484,8 @@ export async function mutate(github, apply, describe, { as = null, via = null } 
     if (!result.changed) return { unchanged: true, result, db, members, actor };
     const errs = validateDb(db, members);
     if (errs.length) throw new Error(`저장하지 않았습니다(검사 실패): ${errs.join(' · ')}`);
-    const w = await github.writeFile(DB_FILE, `${JSON.stringify(db, null, 2)}\n`, sha, `미믹노트: ${describe(result, actor)} (by ${actor.name}·${via ? `${via}, ${login} 계정으로 저장` : login})`);
+    const save = github.commitFile ? (body, msg) => github.commitFile(head, DB_FILE, body, msg) : (body, msg) => github.writeFile(DB_FILE, body, sha, msg);
+    const w = await save(`${JSON.stringify(db, null, 2)}\n`, `미믹노트: ${describe(result, actor)} (by ${actor.name}·${via ? `${via}, ${login} 계정으로 저장` : login})`);
     if (w.conflict) continue;
     return { ...w, result, db, members, actor, attempt };
   }

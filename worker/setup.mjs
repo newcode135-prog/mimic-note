@@ -8,7 +8,7 @@
 // ⑤ GitHub 비밀값 NOTE_RELAY_URL·NOTE_RELAY_SECRET ⑥ 이 컴퓨터의 기존 연결·링크·확인 상태 옮기기 ⑦ 텔레그램 웹훅 연결
 // 토큰은 화면·저장소에 남기지 않는다. 필요한 GitHub 토큰: https://github.com/settings/personal-access-tokens/new
 //   Repository access: Only select repositories → newcode135-prog/mimic-note
-//   Permissions: Contents = Read and write, Actions = Read and write (Metadata 는 자동)
+//   Permissions: Contents = Read and write (Metadata 는 자동) — 다른 권한은 필요 없음
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -76,15 +76,21 @@ async function main() {
   const have = new Set([...wrangler(['secret', 'list'], { allowFail: true }).matchAll(/"name":\s*"([A-Z_]+)"/g)].map((m) => m[1]));
   if (!env.NOTE_RELAY_SECRET) setEnvVar(ENV_FILE, 'NOTE_RELAY_SECRET', key(32));
   if (!env.NOTE_WEBHOOK_SECRET) setEnvVar(ENV_FILE, 'NOTE_WEBHOOK_SECRET', key(32));
+  if (!env.NOTE_IMPORT_SECRET) setEnvVar(ENV_FILE, 'NOTE_IMPORT_SECRET', key(32)); // 이 컴퓨터와 워커에만(GitHub 에는 안 올림)
   env = readEnv(ROOT, process.env);
   wrangler(['secret', 'put', 'TELEGRAM_BOT_TOKEN'], { input: token });
   wrangler(['secret', 'put', 'RELAY_SECRET'], { input: env.NOTE_RELAY_SECRET });
   wrangler(['secret', 'put', 'WEBHOOK_SECRET'], { input: env.NOTE_WEBHOOK_SECRET });
+  wrangler(['secret', 'put', 'IMPORT_SECRET'], { input: env.NOTE_IMPORT_SECRET });
   if (!have.has('GITHUB_TOKEN') || args.has('--new-github-token')) {
     console.log('   GitHub 토큰이 필요합니다(맨 위 주석의 권한으로 만든 fine-grained 토큰, 화면에 표시되지 않음).');
     const ghToken = process.env.MIMIC_GITHUB_TOKEN || await askHidden('   GitHub 토큰: ');
-    const check = await fetch(`https://api.github.com/repos/${REPO}/contents/mimic-note/data/members.json`, { headers: { authorization: `Bearer ${ghToken}`, 'user-agent': 'mimic-note-setup' } });
+    const h = { authorization: `Bearer ${ghToken}`, 'user-agent': 'mimic-note-setup', accept: 'application/vnd.github+json' };
+    const check = await fetch(`https://api.github.com/repos/${REPO}/contents/mimic-note/data/members.json`, { headers: h });
     if (!check.ok) throw new Error(`GitHub 토큰으로 ${REPO} 를 읽지 못했습니다(${check.status}). 저장소 선택·권한을 확인하세요.`);
+    // 쓰기 권한 확인: 아무 데도 연결되지 않는 작은 blob 하나를 만들어 본다(브랜치·파일은 바뀌지 않음)
+    const write = await fetch(`https://api.github.com/repos/${REPO}/git/blobs`, { method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: JSON.stringify({ content: 'mimic-note write check', encoding: 'utf-8' }) });
+    if (!write.ok) throw new Error(`GitHub 토큰에 쓰기 권한이 없습니다(${write.status}). Contents 를 Read and write 로 바꿔 다시 만드세요.`);
     wrangler(['secret', 'put', 'GITHUB_TOKEN'], { input: ghToken });
   }
   console.log('   등록했습니다(텔레그램 토큰·GitHub 토큰·연결 비밀)');
@@ -110,10 +116,10 @@ async function main() {
   } catch { /* 링크 없음 */ }
   let verified = null;
   try { verified = createGithub().verifiedSha(); } catch { /* 다음 알림 실행 때 들어감 */ }
-  const imp = await fetch(`${url}/relay/import`, { method: 'POST', headers: { authorization: `Bearer ${env.NOTE_RELAY_SECRET}`, 'content-type': 'application/json' }, body: JSON.stringify({ owners, codes, verified }) });
+  const imp = await fetch(`${url}/relay/import`, { method: 'POST', headers: { authorization: `Bearer ${env.NOTE_IMPORT_SECRET}`, 'content-type': 'application/json' }, body: JSON.stringify({ owners, codes, verified }) });
   const impJ = await imp.json().catch(() => ({}));
   if (!imp.ok) throw new Error(`봇 서버에 옮기지 못했습니다(${imp.status}) — 비밀값이 막 등록돼 반영 중일 수 있으니 1분 뒤 다시 실행하세요.`);
-  console.log(`   연결 ${Object.keys(owners).length}명(${(impJ.linked || []).join(', ') || '없음'}) · 링크 ${codes.length}개 · 확인 상태 ${verified ? verified.slice(0, 7) : '다음 알림 때'}`);
+  console.log(`   연결 ${(impJ.linked || []).join(', ') || '없음'}(이미 서버에 연결된 사람은 그대로) · 링크 ${codes.length}개 · 확인 상태 ${verified ? verified.slice(0, 7) : '다음 알림 때'}`);
 
   console.log('⑦ 텔레그램 웹훅 연결…');
   await telegramApi(token, 'setWebhook', { url: `${url}/telegram`, secret_token: env.NOTE_WEBHOOK_SECRET, allowed_updates: ['message', 'callback_query'] });

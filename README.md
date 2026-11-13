@@ -38,7 +38,7 @@
 node worker/setup.mjs     # 저장소 주인이 본인 터미널에서 한 번: 클라우드플레어 로그인 → 배포 → 웹훅 연결
 ```
 
-필요한 것: 클라우드플레어 무료 계정, GitHub fine-grained 토큰(저장소 `mimic-note` 만, Contents·Actions 읽기/쓰기) — 자세한 건 `worker/setup.mjs` 맨 위.
+필요한 것: 클라우드플레어 무료 계정, GitHub fine-grained 토큰(저장소 `mimic-note` 만, **Contents = Read and write**) — 자세한 건 `worker/setup.mjs` 맨 위.
 
 ## 텔레그램에서 보는 법
 

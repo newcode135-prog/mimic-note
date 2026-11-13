@@ -54,6 +54,22 @@ export function createGithub(repo = REPO) {
       }
       return null;
     },
+    headSha: () => api(`repos/${repo}/git/ref/heads/main`).object.sha,
+    // head 커밋 위에만 새 커밋을 만들고 main 을 빨리감기로만 옮긴다(그사이 main 이 바뀌면 422 → 충돌로 다시)
+    commitFile(parent, file, text, message) {
+      const post = (p, body) => JSON.parse(gh(['api', '-X', 'POST', p, '--input', '-'], JSON.stringify(body)));
+      const blob = post(`repos/${repo}/git/blobs`, { content: Buffer.from(text, 'utf8').toString('base64'), encoding: 'base64' });
+      const base = api(`repos/${repo}/git/commits/${parent}`);
+      const tree = post(`repos/${repo}/git/trees`, { base_tree: base.tree.sha, tree: [{ path: file, mode: '100644', type: 'blob', sha: blob.sha }] });
+      const commit = post(`repos/${repo}/git/commits`, { message, tree: tree.sha, parents: [parent] });
+      try {
+        gh(['api', '-X', 'PATCH', `repos/${repo}/git/refs/heads/main`, '--input', '-'], JSON.stringify({ sha: commit.sha, force: false }));
+      } catch (e) {
+        if (/HTTP 422/.test(e.stderr || e.message)) return { conflict: true };
+        throw e;
+      }
+      return { commit: commit.sha, url: commit.html_url || `https://github.com/${repo}/commit/${commit.sha}` };
+    },
     latestRunId: () => api(`repos/${repo}/actions/workflows/${WORKFLOW}/runs?per_page=1`).workflow_runs[0]?.id || 0,
     runs: (query) => api(`repos/${repo}/actions/workflows/${WORKFLOW}/runs?per_page=20&${query}`).workflow_runs,
     run: (id) => api(`repos/${repo}/actions/runs/${id}`),
