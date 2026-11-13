@@ -426,10 +426,11 @@
       "order": 0,
       "title": "텔레그램 미션이 잘 보이면 민호님에게 \"잘 보여\"라고 말해 주기",
       "detail": "",
-      "status": "todo",
+      "status": "done",
       "createdBy": "minho",
       "createdAt": "2026-11-13T12:19:48.494Z",
-      "doneAt": null
+      "doneAt": "2026-11-13T12:21:01.207Z",
+      "doneBy": "yuri"
     }
   ]
 }
