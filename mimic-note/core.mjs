@@ -2,7 +2,26 @@
 
 // 팀원 명부·미션 규칙·검사, 텔레그램 API, 메시지 문구, 봇 판단(decide), GitHub 저장(mutate: 어댑터를 받아 동작).
 
+import { tr, dn, isLang, allLabels, LANGS, LANG_NAMES } from './i18n.mjs';
+
+export { tr, dn, isLang, guessLang, LANGS, LANG_NAMES } from './i18n.mjs';
+
 export const ADMIN_ROLES = new Set(['owner', 'admin']);
+
+// 팀원이 고른 텔레그램 언어(미션 DB 의 langs, 기본 한국어)
+export const langOf = (db, memberId) => (isLang(db?.langs?.[memberId]) ? db.langs[memberId] : 'ko');
+
+// 언어 고르기 — 본인 것만(텔레그램 봇이 연결로 확인한 사람). 한국어로 돌아가면 기록을 지운다.
+export function setLang(db, memberId, lang, by) {
+  if (by !== memberId) throw new Error('언어는 본인 것만 바꿀 수 있어요.');
+  if (!isLang(lang)) throw new Error(`지원하지 않는 언어: ${lang}`);
+  if (langOf(db, memberId) === lang) return { changed: false };
+  db.langs = { ...(db.langs || {}) };
+  if (lang === 'ko') delete db.langs[memberId];
+  else db.langs[memberId] = lang;
+  if (!Object.keys(db.langs).length) delete db.langs;
+  return { changed: true };
+}
 
 export const REPO = 'newcode135-prog/mimic-note';
 
@@ -252,7 +271,7 @@ export function addMissions(db, assignee, items, by, members, { top = false } = 
 // status: requested(대기) → todo(수락) 또는 declined(거절). 대기 요청은 목록·진행률에 들어가지 않는다.
 export const REQUEST_LIMIT = 10; // 한 사람이 동시에 걸어 둘 수 있는 대기 요청 수(실수·도배 방지)
 
-const adminNames = (members) => members.filter((m) => ADMIN_ROLES.has(m.role)).map((m) => m.name).join('·');
+const adminNames = (members, lang = 'ko') => members.filter((m) => ADMIN_ROLES.has(m.role)).map((m) => dn(m, lang)).join({ en: ', ', zh: '、' }[lang] || '·');
 
 export function pendingRequests(db, memberId) {
   return db.missions.filter((m) => m.assignee === memberId && m.status === 'requested').sort((a, b) => a.id.localeCompare(b.id));
@@ -265,9 +284,10 @@ export function sendMode(from, to) {
   return to.id !== from.id && ADMIN_ROLES.has(to.role) ? 'request' : null;
 }
 
-export function sendDeniedText(from, to, members) {
-  if (from.id === to.id) return `팀원은 본인 미션을 직접 만들 수 없어요(대전제: 배정은 관리자만). 관리자(${esc(adminNames(members))})에게 요청하세요.`;
-  return `팀원끼리는 미션을 주고받을 수 없어요(대전제: 배정은 관리자만). ${esc(to.name)}님에게 맡길 일이면 관리자(${esc(adminNames(members))})에게 요청하세요.`;
+export function sendDeniedText(from, to, members, lang = 'ko') {
+  const t = tr(lang);
+  const admins = esc(adminNames(members, lang));
+  return from.id === to.id ? t.deniedSelf(admins) : t.deniedPeer(esc(dn(to, lang)), admins);
 }
 
 export function requestMissions(db, assignee, items, by, members, now = new Date().toISOString()) {
@@ -364,6 +384,15 @@ export function validateDb(db, members) {
     if (m?.priority != null && m.priority !== 'low') errs.push(`${at}: priority 는 low 만`);
     if (m?.status === 'done' && !m.doneAt) errs.push(`${at}: 완료인데 doneAt 없음`);
   });
+  if (db.langs != null) {
+    if (typeof db.langs !== 'object' || Array.isArray(db.langs)) errs.push('langs 는 { 팀원 아이디: 언어 } 객체');
+    else {
+      for (const [id, l] of Object.entries(db.langs)) {
+        if (memberIds && !memberIds.has(id)) errs.push(`langs: 명부에 없는 팀원 ${id}`);
+        if (!isLang(l)) errs.push(`langs.${id}: 언어는 ${LANGS.join('·')}`);
+      }
+    }
+  }
   return errs;
 }
 
@@ -381,100 +410,109 @@ const num = (i) => KEYCAPS[i] || `${i + 1}.`;
 
 // 팀원 한 명의 텔레그램 메시지(HTML). 상위 3개는 크게, 설명과 4번부터는 눌러서 펼치기.
 // 제목·순서·진행률은 모두 DB 에서 계산한다. justDone: 이번 변경에서 끝낸 미션 제목(맨 위에 "✅ 방금 완료").
-// justAdded: 다른 사람이 새로 준 미션 [{ title, by }] (맨 위에 "🆕 새 미션: … (창민님이 줌)").
-export function renderTelegram(member, db, { justDone = [], justAdded = [] } = {}) {
+// justAdded: 다른 사람이 새로 준 미션 [{ title, by }] (맨 위에 "🆕 새 미션: … (창민님이 줌)", by 는 표시할 이름).
+// lang: 문구 언어 — 없으면 그 팀원이 고른 언어(db.langs), 기본 한국어. 미션 제목·설명은 적은 그대로.
+export function renderTelegram(member, db, { justDone = [], justAdded = [], lang = langOf(db, member.id) } = {}) {
+  const t = tr(lang);
   const open = openMissions(db, member.id);
   const done = doneMissions(db, member.id).length;
   const lines = ['🎯 <b>MIMIC NOTE</b>', ''];
   if (justAdded.length) {
-    lines.push(...justAdded.slice(0, 3).map((x) => `🆕 새 미션: ${esc(clip(x.title, 120))}${x.by ? ` (${esc(x.by)}님이 줌)` : ''}`));
-    if (justAdded.length > 3) lines.push(`🆕 … 외 ${justAdded.length - 3}개`);
+    lines.push(...justAdded.slice(0, 3).map((x) => t.newMission(esc(clip(x.title, 120)), x.by ? esc(x.by) : '')));
+    if (justAdded.length > 3) lines.push(t.moreNew(justAdded.length - 3));
     lines.push('');
   }
-  if (justDone.length) lines.push(...justDone.slice(0, 5).map((t) => `✅ 방금 완료: ${esc(clip(t, 120))}`), '');
-  lines.push(`👤 <b>${esc(member.name)}님의 미션</b>`, '');
-  if (!open.length) lines.push('🎉 남은 미션이 없어요!', '');
+  if (justDone.length) lines.push(...justDone.slice(0, 5).map((x) => t.justDone(esc(clip(x, 120)))), '');
+  lines.push(t.missionsOf(esc(dn(member, lang))), '');
+  if (!open.length) lines.push(t.noneLeft, '');
   open.slice(0, 3).forEach((m, i) => {
-    lines.push(`${num(i)} ${esc(clip(m.title, 200))}${m.priority === 'low' ? ' <i>(후순위)</i>' : ''}`);
+    lines.push(`${num(i)} ${esc(clip(m.title, 200))}${m.priority === 'low' ? ` <i>(${t.low})</i>` : ''}`);
     if (m.detail) lines.push(`<blockquote expandable>${esc(clip(m.detail, 600))}</blockquote>`);
     lines.push('');
   });
   const rest = open.slice(3);
   if (rest.length) {
-    const shown = rest.slice(0, 30).map((m, i) => `${num(i + 3)} ${esc(clip(m.title, 120))}${m.priority === 'low' ? ' (후순위)' : ''}`);
-    if (rest.length > 30) shown.push(`… 외 ${rest.length - 30}개`);
-    lines.push(`➕ 추가 미션 ${rest.length}개 (눌러서 전체 보기)`, `<blockquote expandable>${shown.join('\n')}</blockquote>`, '');
+    const shown = rest.slice(0, 30).map((m, i) => `${num(i + 3)} ${esc(clip(m.title, 120))}${m.priority === 'low' ? ` (${t.low})` : ''}`);
+    if (rest.length > 30) shown.push(t.andMore(rest.length - 30));
+    lines.push(t.moreMissions(rest.length), `<blockquote expandable>${shown.join('\n')}</blockquote>`, '');
   }
-  lines.push('━━━━━━━━━━', '', `📊 진행률 ${done}/${open.length + done}`, `📌 남은 미션 ${open.length}개`);
+  lines.push('━━━━━━━━━━', '', t.progress(done, open.length + done), t.remaining(open.length));
   return lines.join('\n');
 }
 
-// 미션을 준 사람(createdBy)에게 가는 완료 알림. 진행률은 보내는 시점의 확인된 상태 기준.
+// 미션을 준 사람(createdBy)에게 가는 완료 알림(그 사람의 언어로). 진행률은 보내는 시점의 확인된 상태 기준.
 // items: [{ title, doneBy }] (문자열도 됨). 담당자가 아닌 사람이 완료 처리했으면 그 사람을 적는다.
-export function renderDoneNotice(assignee, items, db, members = []) {
+export function renderDoneNotice(assignee, items, db, members = [], lang = 'ko') {
+  const t = tr(lang);
   const open = openMissions(db, assignee.id).length;
   const done = doneMissions(db, assignee.id).length;
   const line = (it) => {
     const { title, doneBy } = typeof it === 'string' ? { title: it } : it;
-    const by = doneBy && doneBy !== assignee.id ? members.find((x) => x.id === doneBy)?.name || doneBy : null;
-    return `• ${esc(clip(title, 120))}${by ? ` (${esc(by)}님이 완료 처리)` : ''}`;
+    const bm = members.find((x) => x.id === doneBy);
+    const by = doneBy && doneBy !== assignee.id ? (bm ? dn(bm, lang) : doneBy) : null;
+    return `• ${esc(clip(title, 120))}${by ? t.markedBy(esc(by)) : ''}`;
   };
-  return ['✅ <b>MIMIC NOTE 완료 알림</b>', '', `👤 ${esc(assignee.name)}님이 미션을 완료했어요`, ...items.slice(0, 10).map(line), '',
-    `📊 ${esc(assignee.name)}님 진행률 ${done}/${open + done} · 남은 미션 ${open}개`].join('\n');
+  const n = esc(dn(assignee, lang));
+  return [t.doneTitle, '', t.completedBy(n), ...items.slice(0, 10).map(line), '', t.doneProgress(n, done, open + done, open)].join('\n');
 }
 
 export const BOT_NAME = '코어 오브 미믹노트';
 
+export const TEAM_BUTTON = tr('ko').teamBtn;
+export const SENT_BUTTON = tr('ko').sentBtn;
 
-export const TEAM_BUTTON = '📋 팀 현황';
-export const SENT_BUTTON = '📤 보낸 미션';
-
-// 늘 떠 있는 버튼판: 팀원 이름 + "봇"(한 줄에 3개) + 맨 아래 [팀 현황][보낸 미션]
-export function menuKeyboard(members) {
-  const buttons = members.map((m) => ({ text: `${m.name}봇` }));
+// 늘 떠 있는 버튼판: 팀원 이름 + "봇"(한 줄에 3개) + 맨 아래 [팀 현황][보낸 미션][🌐 언어] — 보는 사람의 언어로
+export function menuKeyboard(members, lang = 'ko') {
+  const t = tr(lang);
+  const buttons = members.map((m) => ({ text: t.botBtn(dn(m, lang)) }));
   const keyboard = [];
   for (let i = 0; i < buttons.length; i += 3) keyboard.push(buttons.slice(i, i + 3));
-  keyboard.push([{ text: TEAM_BUTTON }, { text: SENT_BUTTON }]);
+  keyboard.push([{ text: t.teamBtn }, { text: t.sentBtn }, { text: t.langBtn }]);
   return { keyboard, resize_keyboard: true, is_persistent: true };
 }
 
-// app: false 는 버튼(✅·📨·수락/거절)이 없는 봇 서버(워커)용 — 글 명령만 안내한다
-export function menuText(owner, members = [], { app = true } = {}) {
-  if (!owner) return ['🎯 <b>코어 오브 미믹노트</b>', '', '아래에서 본인 이름 버튼을 누르세요. 처음이면 관리자에게 받은 <b>본인 연결 링크</b>로 [시작]을 먼저 눌러 주세요.'].join('\n');
-  const n = esc(owner.name);
+// 언어 고르기 버튼(l:ko · l:en · l:zh)
+export function langKeyboard() {
+  return { inline_keyboard: [LANGS.map((l) => ({ text: LANG_NAMES[l], callback_data: `l:${l}` }))] };
+}
+
+// app: false 는 버튼(✅·📨·수락/거절)이 없는 봇 서버(워커)용 — 글 명령만 안내한다(한국어)
+export function menuText(owner, members = [], { app = true, lang = 'ko' } = {}) {
+  const t = tr(lang);
+  if (!owner) return [t.title, '', t.menuUnlinked].join('\n');
   const admin = ADMIN_ROLES.has(owner.role);
   if (!app) {
-    return ['🎯 <b>코어 오브 미믹노트</b>', '', `${n}님, 아래 <b>${n}봇</b>을 누르면 지금 보고할 미션이 와요(다른 이름봇은 그 사람 미션).`, `끝내면 <code>${n} 미션완료 1</code> 처럼 보내세요.`,
+    const k = esc(owner.name);
+    return ['🎯 <b>코어 오브 미믹노트</b>', '', `${k}님, 아래 <b>${k}봇</b>을 누르면 지금 보고할 미션이 와요(다른 이름봇은 그 사람 미션).`, `끝내면 <code>${k} 미션완료 1</code> 처럼 보내세요.`,
       ...(admin ? ['', '미션 주기: <code>창민 이거 결제해줘</code> · 바꾸기: <code>창민 미션설정</code> + 줄마다 <code>1. …</code>'] : [])].join('\n');
   }
-  return ['🎯 <b>코어 오브 미믹노트</b>', '', `${n}님, 이렇게 써요`,
-    `• <b>${n}봇</b> → 내 미션 · <b>✅</b> 버튼으로 완료${admin ? ' · 받은 요청 수락/거절' : ''}`,
-    admin ? '• 다른 사람 이름봇 → 그 사람 미션 보기 · <b>📨 미션 주기</b>' : `• 다른 사람 이름봇 → 그 사람 미션 보기 · 관리자(${esc(adminNames(members))})에게는 <b>📨 미션 요청</b>(수락하면 미션이 돼요)`,
-    `• <b>${TEAM_BUTTON}</b> · <b>${SENT_BUTTON}</b>(내가 준·요청한 미션이 어떻게 됐는지)`,
-    '', '글로도 돼요', admin ? '<code>창민 이거 결제해줘</code> → 미션 주기 · <code>창민 미션설정</code> + 줄마다 <code>1. …</code> → 바꾸기' : `<code>${esc(members.find((m) => ADMIN_ROLES.has(m.role) && m.id !== owner.id)?.name || '민호')} 이거 봐줘</code> → 미션 요청`,
-    `<code>${n} 미션완료 1</code> → 완료`, '', '미션이 생기거나 바뀌면 이 대화로 알림이 와요. 미션을 준 사람에게는 완료 알림이 가요.'].join('\n');
+  const ex = members.find((m) => ADMIN_ROLES.has(m.role) && m.id !== owner.id);
+  return [t.title, '', ...t.menu({
+    n: esc(dn(owner, lang)), admin, admins: esc(adminNames(members, lang)), adminEx: esc(ex ? dn(ex, lang) : dn({ id: 'minho', name: '민호' }, lang)),
+    team: t.teamBtn, sent: t.sentBtn, lang: t.langBtn,
+  })].join('\n');
 }
 
 export function missionsText(member, db) {
   return boardText(member, member, db, []);
 }
 
-// 이름봇을 눌렀을 때: 본인이면 내 미션 + 받은 요청, 남이면 그 사람 미션(보기만) + 보낼 수 있는지 안내
-export function boardText(viewer, member, db, members) {
-  const lines = [renderTelegram(member, db)];
+// 이름봇을 눌렀을 때(보는 사람의 언어로): 본인이면 내 미션 + 받은 요청, 남이면 그 사람 미션(보기만) + 보낼 수 있는지 안내
+export function boardText(viewer, member, db, members, lang = langOf(db, viewer.id)) {
+  const t = tr(lang);
+  const lines = [renderTelegram(member, db, { lang })];
   if (viewer.id === member.id) {
     const reqs = pendingRequests(db, member.id);
     if (reqs.length) {
-      const who = (id) => members.find((x) => x.id === id)?.name || id;
-      lines.push('', `📨 <b>받은 요청 ${reqs.length}개</b> (수락하면 내 미션이 돼요)`, ...reqs.slice(0, 5).map((m, i) => `요청 ${i + 1}. ${esc(clip(m.title, 120))} — ${esc(who(m.createdBy))}님`));
-      if (reqs.length > 5) lines.push(`… 외 ${reqs.length - 5}개(먼저 온 것부터 처리하면 이어서 보여요)`);
+      const who = (id) => { const x = members.find((y) => y.id === id); return x ? dn(x, lang) : id; };
+      lines.push('', t.reqHeader(reqs.length), ...reqs.slice(0, 5).map((m, i) => t.reqLine(i + 1, esc(clip(m.title, 120)), esc(who(m.createdBy)))));
+      if (reqs.length > 5) lines.push(t.reqMore(reqs.length - 5));
     }
-    lines.push('', openMissions(db, member.id).length ? '끝낸 미션은 아래 <b>✅ 번호</b>를 누르세요.' : '새 미션이 오면 여기로 알려 드려요.');
+    lines.push('', openMissions(db, member.id).length ? t.pressDone : t.willNotify);
   } else {
     const mode = sendMode(viewer, member);
-    lines.push('', mode === 'add' ? `📨 아래 버튼으로 ${esc(member.name)}님에게 미션을 줄 수 있어요.`
-      : mode === 'request' ? `📨 아래 버튼으로 ${esc(member.name)}님에게 미션을 요청할 수 있어요(수락하면 미션이 돼요).`
-        : `👀 보기만 할 수 있어요. ${sendDeniedText(viewer, member, members)}`);
+    const n = esc(dn(member, lang));
+    lines.push('', mode === 'add' ? t.canGive(n) : mode === 'request' ? t.canRequest(n) : t.viewOnly(sendDeniedText(viewer, member, members, lang)));
   }
   return lines.join('\n');
 }
@@ -488,111 +526,115 @@ export function doneButtons(db, memberId) {
 }
 
 // GitHub Actions 가 보내는 목록 메시지에 붙는 버튼(봇이 켜져 있을 때 동작)
-export function listKeyboard(db, memberId) {
-  return { inline_keyboard: [...doneButtons(db, memberId), [{ text: '🔄 새로고침', callback_data: `v:${memberId}` }]] };
+export function listKeyboard(db, memberId, lang = langOf(db, memberId)) {
+  return { inline_keyboard: [...doneButtons(db, memberId), [{ text: tr(lang).refresh, callback_data: `v:${memberId}` }]] };
 }
 
-export function boardKeyboard(viewer, member, db) {
+export function boardKeyboard(viewer, member, db, lang = langOf(db, viewer.id)) {
+  const t = tr(lang);
   const rows = [];
   if (viewer.id === member.id) {
     rows.push(...doneButtons(db, member.id));
     if (ADMIN_ROLES.has(viewer.role)) {
-      pendingRequests(db, member.id).slice(0, 5).forEach((m, i) => rows.push([{ text: `✅ 요청 ${i + 1} 수락`, callback_data: `a:${m.id}` }, { text: `❌ 요청 ${i + 1} 거절`, callback_data: `n:${m.id}` }]));
+      pendingRequests(db, member.id).slice(0, 5).forEach((m, i) => rows.push([{ text: t.reqAcceptBtn(i + 1), callback_data: `a:${m.id}` }, { text: t.reqDeclineBtn(i + 1), callback_data: `n:${m.id}` }]));
     }
   } else {
     const mode = sendMode(viewer, member);
-    if (mode) rows.push([{ text: `📨 ${member.name}님에게 미션 ${mode === 'add' ? '주기' : '요청'}`, callback_data: `s:${member.id}` }]);
+    if (mode) rows.push([{ text: t.giveBtn(dn(member, lang), mode), callback_data: `s:${member.id}` }]);
   }
-  rows.push([{ text: '🔄 새로고침', callback_data: `v:${member.id}` }]);
+  rows.push([{ text: t.refresh, callback_data: `v:${member.id}` }]);
   return { inline_keyboard: rows };
 }
 
 // 팀 현황: 사람마다 남은·완료(+관리자는 받은 요청), 텔레그램 연결 여부(linked: 연결된 팀원 아이디 Set)
-export function teamText(members, db, linked = null) {
-  const lines = ['📋 <b>팀 현황</b>', ''];
+export function teamText(members, db, linked = null, lang = 'ko') {
+  const t = tr(lang);
+  const lines = [t.teamTitle, ''];
   for (const m of members) {
-    const open = openMissions(db, m.id).length;
-    const done = doneMissions(db, m.id).length;
-    const req = pendingRequests(db, m.id).length;
-    lines.push(`• <b>${esc(m.name)}</b> — 남은 ${open} · 완료 ${done}${req ? ` · 📨 요청 ${req}` : ''}${linked && !linked.has(m.id) ? ' · <i>텔레그램 미연결</i>' : ''}`);
+    lines.push(t.teamLine(esc(dn(m, lang)), openMissions(db, m.id).length, doneMissions(db, m.id).length, pendingRequests(db, m.id).length, Boolean(linked && !linked.has(m.id))));
   }
-  lines.push('', '이름봇을 누르면 그 사람 미션을 볼 수 있어요.');
+  lines.push('', t.teamHint);
   return lines.join('\n');
 }
 
 // 보낸 미션: 내가 다른 사람에게 준·요청한 미션이 어떻게 됐는지(최근 것부터)
-export function sentText(viewer, members, db) {
-  const who = (id) => esc(members.find((x) => x.id === id)?.name || id);
+export function sentText(viewer, members, db, lang = langOf(db, viewer.id)) {
+  const t = tr(lang);
+  const who = (id) => { const x = members.find((y) => y.id === id); return esc(x ? dn(x, lang) : id); };
   const mine = db.missions.filter((m) => m.createdBy === viewer.id && m.assignee !== viewer.id).sort((a, b) => b.id.localeCompare(a.id));
   const group = (status) => mine.filter((m) => m.status === status);
-  const lines = ['📤 <b>보낸 미션</b>', ''];
-  if (!mine.length) return [...lines, '아직 다른 사람에게 준·요청한 미션이 없어요. 이름봇 → 📨 버튼으로 보내 보세요.'].join('\n');
+  const lines = [t.sentTitle, ''];
+  if (!mine.length) return [...lines, t.sentNone].join('\n');
   const block = (title, list, max = 10) => {
     if (!list.length) return;
     lines.push(`<b>${title} ${list.length}</b>`, ...list.slice(0, max).map((m) => `• ${who(m.assignee)} — ${esc(clip(m.title, 80))}`));
-    if (list.length > max) lines.push(`… 외 ${list.length - max}개`);
+    if (list.length > max) lines.push(t.andMore(list.length - max));
     lines.push('');
   };
-  block('⏳ 수락 기다리는 요청', group('requested'));
-  block('🔨 진행 중', group('todo'));
-  block('✅ 완료', group('done'), 5);
-  block('❌ 거절됨', group('declined'), 5);
+  block(t.sentWaiting, group('requested'));
+  block(t.sentProgress, group('todo'));
+  block(t.sentDone, group('done'), 5);
+  block(t.sentDeclined, group('declined'), 5);
   return lines.join('\n').trimEnd();
 }
 
-// 요청 알림(받는 관리자에게, 수락/거절 버튼과 함께)
-export function requestNotice(requester, added) {
+// 요청 알림(받는 관리자에게, 그 사람의 언어로, 수락/거절 버튼과 함께)
+export function requestNotice(requester, added, lang = 'ko') {
+  const t = tr(lang);
+  const r = esc(dn(requester, lang));
   return {
-    text: ['📨 <b>미션 요청이 왔어요</b>', '', `${esc(requester.name)}님이 보냈어요:`, ...added.slice(0, 5).map((m, i) => `${i + 1}. ${esc(clip(m.title, 150))}${m.detail ? `\n<blockquote expandable>${esc(clip(m.detail, 400))}</blockquote>` : ''}`),
-      ...(added.length > 5 ? [`… 외 ${added.length - 5}개(내 이름봇에서 보여요)`] : []), '', `수락하면 내 미션에 들어가고, ${esc(requester.name)}님에게 결과를 알려 드려요.`].join('\n'),
-    reply_markup: { inline_keyboard: added.slice(0, 5).map((m, i) => [{ text: `✅ ${i + 1} 수락`, callback_data: `a:${m.id}` }, { text: `❌ ${i + 1} 거절`, callback_data: `n:${m.id}` }]) },
+    text: [t.reqTitle, '', t.reqFrom(r), ...added.slice(0, 5).map((m, i) => `${i + 1}. ${esc(clip(m.title, 150))}${m.detail ? `\n<blockquote expandable>${esc(clip(m.detail, 400))}</blockquote>` : ''}`),
+      ...(added.length > 5 ? [t.reqMoreBoard(added.length - 5)] : []), '', t.reqFooter(r)].join('\n'),
+    reply_markup: { inline_keyboard: added.slice(0, 5).map((m, i) => [{ text: t.acceptBtn(i + 1), callback_data: `a:${m.id}` }, { text: t.declineBtn(i + 1), callback_data: `n:${m.id}` }]) },
   };
 }
 
-// 요청 결과 알림(요청한 사람에게)
-export function respondNotice(mission, accept, actor, assignee) {
-  const n = esc(assignee.name);
-  const by = actor.id !== assignee.id ? ` (${esc(actor.name)}님이 처리)` : '';
-  return accept ? `✅ <b>${n}님이 미션 요청을 수락했어요</b>${by}\n• ${esc(clip(mission.title, 150))}\n\n이제 ${n}님의 미션이에요. 끝나면 완료 알림이 와요.`
-    : `❌ <b>${n}님이 미션 요청을 거절했어요</b>${by}\n• ${esc(clip(mission.title, 150))}`;
+// 요청 결과 알림(요청한 사람에게, 그 사람의 언어로)
+export function respondNotice(mission, accept, actor, assignee, lang = 'ko') {
+  const t = tr(lang);
+  const n = esc(dn(assignee, lang));
+  const by = actor.id !== assignee.id ? t.handledBy(esc(dn(actor, lang))) : '';
+  return accept ? `${t.accepted(n)}${by}\n• ${esc(clip(mission.title, 150))}\n\n${t.nowYours(n)}` : `${t.declined(n)}${by}\n• ${esc(clip(mission.title, 150))}`;
 }
 
 // 인라인 버튼(callback_data) 하나를 어떻게 처리할지(순수 함수). viewer: 누른 사람(연결된 팀원, 없으면 null)
-//   v:<팀원> 보기·새로고침 · s:<팀원> 미션 주기/요청 시작 · c:<미션> 완료(확인 받음) · a:/n:<미션> 요청 수락/거절 · g:/x:<키> 확인/취소
-export function decideCallback(data, { viewer, members, db }) {
+//   v:<팀원> 보기·새로고침 · s:<팀원> 미션 주기/요청 시작 · c:<미션> 완료(확인 받음) · a:/n:<미션> 요청 수락/거절
+//   l:<ko|en|zh> 언어 고르기 · g:/x:<키> 확인/취소. 안내 문구는 누른 사람의 언어로.
+export function decideCallback(data, { viewer, members, db, lang = viewer ? langOf(db, viewer.id) : 'ko' }) {
+  const t = tr(lang);
   const m = String(data || '').match(/^([a-z]):([\w-]{1,40})$/);
-  if (!m) return { kind: 'stale', text: '알 수 없는 버튼이에요.' };
+  if (!m) return { kind: 'stale', text: t.unknownBtn };
   const [, act, arg] = m;
   if (act === 'g' || act === 'x') return { kind: 'pending', confirm: act === 'g', key: arg };
-  if (!viewer) return { kind: 'stale', text: '먼저 관리자에게 받은 본인 연결 링크로 연결해 주세요.' };
+  if (!viewer) return { kind: 'stale', text: t.linkFirst };
+  if (act === 'l') return isLang(arg) ? { kind: 'lang', lang: arg } : { kind: 'stale', text: t.unknownBtn };
   if (act === 'v' || act === 's') {
     const member = members.find((x) => x.id === arg);
-    if (!member) return { kind: 'stale', text: '명부에 없는 팀원이에요.' };
+    if (!member) return { kind: 'stale', text: t.notInRoster };
     if (act === 'v') return { kind: 'board', member };
     const mode = sendMode(viewer, member);
-    return mode ? { kind: 'compose', target: member, mode } : { kind: 'stale', text: sendDeniedText(viewer, member, members).replace(/<[^>]+>/g, '') };
+    return mode ? { kind: 'compose', target: member, mode } : { kind: 'stale', text: sendDeniedText(viewer, member, members, lang).replace(/<[^>]+>/g, '') };
   }
   const mission = db.missions.find((x) => x.id === arg);
   const target = mission && members.find((x) => x.id === mission.assignee);
-  if (!mission || !target) return { kind: 'stale', text: '없는 미션이에요.' };
+  if (!mission || !target) return { kind: 'stale', text: t.noMission };
   if (act === 'c') {
-    if (mission.status !== 'todo') return { kind: 'stale', text: '이미 완료됐거나 바뀐 미션이에요. 🔄 새로고침해 보세요.' };
-    if (mission.assignee !== viewer.id && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: '본인 미션만 완료할 수 있어요.' };
+    if (mission.status !== 'todo') return { kind: 'stale', text: t.changed };
+    if (mission.assignee !== viewer.id && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: t.onlyOwn };
     return { kind: 'confirm-done', target, picked: [{ id: mission.id, title: mission.title }] };
   }
   if (act === 'a' || act === 'n') {
-    if (mission.status !== 'requested') return { kind: 'stale', text: '이미 처리한 요청이에요.' };
-    if (act === 'a' && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: '요청 수락은 관리자만 할 수 있어요.' };
-    if (act === 'n' && viewer.id !== mission.assignee && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: '받은 사람이나 관리자만 거절할 수 있어요.' };
+    if (mission.status !== 'requested') return { kind: 'stale', text: t.handled };
+    if (act === 'a' && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: t.acceptAdmin };
+    if (act === 'n' && viewer.id !== mission.assignee && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: t.declineWho };
     return { kind: 'respond', accept: act === 'a', mission, target, requester: members.find((x) => x.id === mission.createdBy) || null };
   }
-  return { kind: 'stale', text: '알 수 없는 버튼이에요.' };
+  return { kind: 'stale', text: t.unknownBtn };
 }
 
 // 미션 주기/요청 버튼을 누른 뒤 보내는 안내. 답장 강제(force_reply)는 쓰지 않는다 — 늘 떠 있는 이름 버튼판이 사라지므로.
-export function composePrompt(target, mode) {
-  return [`📨 <b>${esc(target.name)}</b>님에게 ${mode === 'add' ? '줄 미션' : '요청할 미션'}을 이 대화에 적어 보내 주세요(10분 안).`, '',
-    '보낸 글 전체가 미션 하나예요(여러 줄로 써도 하나).', '여러 개를 한 번에 보내려면 <code>1. 첫째</code> <code>2. 둘째</code> 처럼 번호를 붙여 주세요.', '그만두려면 <code>취소</code>'].join('\n');
+export function composePrompt(target, mode, lang = 'ko') {
+  return tr(lang).compose(esc(dn(target, lang)), mode).join('\n');
 }
 
 // .env 의 TELEGRAM_CHAT_ID_<아이디> / TELEGRAM_CHAT_IDS 로 chat id → 팀원 아이디(GitHub 를 부르기 전에 알 수 있게)
@@ -608,17 +650,27 @@ export function ownersFromEnv(env) {
 
 const MAX_ITEMS = 20; // 텔레그램에서 한 번에 주거나 요청할 수 있는 미션 수
 
-function parseItems(chatId, text) {
+function parseItems(chatId, text, t) {
   let items;
   try { items = parseMissionList(text); } catch (e) { return { kind: 'act-error', chatId, error: e.message }; }
-  if (!items.length) return { kind: 'act-error', chatId, error: '미션 내용이 비어 있어요.' };
-  if (items.length > MAX_ITEMS) return { kind: 'act-error', chatId, error: `한 번에 ${MAX_ITEMS}개까지 보낼 수 있어요(지금 ${items.length}개).` };
+  if (!items.length) return { kind: 'act-error', chatId, error: t.empty };
+  if (items.length > MAX_ITEMS) return { kind: 'act-error', chatId, error: t.tooMany(MAX_ITEMS, items.length) };
   return { items };
 }
 
+// 버튼 이름·명령 낱말은 세 언어 모두 알아듣는다(언어를 바꾼 직후 예전 버튼판을 눌러도 되게)
+const BOT_BTN = [/^(\S+?)\s*봇$/, /^(\S+?)\s+bot$/i, /^(\S+?)\s*机器人$/];
+// 중국어는 띄어쓰기가 없어 "任务设置页面有问题"(설정 화면 문제) 같은 보통 문장과 겹친다 → 설정·추가는 뒤에 띄어쓰기·줄바꿈이 있을 때만,
+// 완료는 뒤가 번호(·미션 ID)뿐일 때만 명령으로 본다.
+const KEYWORDS = [/^미션\s*(설정|추가|완료)\s*([\s\S]*)$/, /^mission\s+(set|add|done)(?=\s|$)\s*([\s\S]*)$/i,
+  /^任务\s*(设置|添加)(?=\s|$)\s*([\s\S]*)$/, /^任务\s*(完成)\s*((?:M-\d{4,}|\d{1,3})(?:[\s,，、]+(?:M-\d{4,}|\d{1,3}))*)\s*$/i];
+const KW_ACTION = { 설정: 'set', 추가: 'add', 완료: 'done', set: 'set', add: 'add', done: 'done', 设置: 'set', 添加: 'add', 完成: 'done' };
+
 // 받은 메시지 하나를 어떻게 처리할지(순수 함수 — 테스트 대상). chatOwners: Map(chatId → 팀원 아이디)
 // compose: 📨 버튼을 눌러 미션 내용을 기다리는 중이면 { target, mode } — 버튼·명령이 아닌 글은 그 사람에게 보낼 미션으로 본다.
-export function decide(msg, { members, chatOwners, compose = null }) {
+// lang: 답할 문구의 언어(보낸 사람이 고른 언어)
+export function decide(msg, { members, chatOwners, compose = null, lang = 'ko' }) {
+  const t = tr(lang);
   if (!msg?.chat || typeof msg.text !== 'string') return { kind: 'ignore' };
   if (msg.chat.type !== 'private') return { kind: 'ignore' }; // 단체방에서는 답하지 않는다(미션 공개 방지)
   const chatId = String(msg.chat.id);
@@ -626,53 +678,58 @@ export function decide(msg, { members, chatOwners, compose = null }) {
   const text = msg.text.trim();
   const start = text.match(/^\/start(?:@\w+)?(?:\s+(\S+))?$/);
   if (start?.[1]) return { kind: 'link', chatId };
-  if (start || /^\/(menu|help)(@\w+)?$/.test(text) || text === '메뉴') return { kind: 'menu', chatId, owner };
-  if (compose && /^(취소|\/cancel(@\w+)?)$/.test(text)) return { kind: 'cancel', chatId };
+  if (start || /^\/(menu|help)(@\w+)?$/.test(text) || /^(메뉴|menu|菜单)$/i.test(text)) return { kind: 'menu', chatId, owner };
+  if (compose && /^(취소|cancel|取消|\/cancel(@\w+)?)$/i.test(text)) return { kind: 'cancel', chatId };
   const byName = (n) => members.find((m) => m.name === n || m.id === String(n).toLowerCase()) || null;
-  const team = text === TEAM_BUTTON || /^(팀\s*현황|\/team(@\w+)?)$/.test(text);
-  const sent = text === SENT_BUTTON || /^(보낸\s*미션|\/sent(@\w+)?)$/.test(text);
-  const me = /^\/me(@\w+)?$/.test(text) || /^내\s*미션$/.test(text);
-  const btnTarget = byName(text.match(/^(\S+?)\s*봇$/)?.[1]);
-  if (team || sent || me || btnTarget) {
+  const team = allLabels('teamBtn').includes(text) || /^(팀\s*현황|team|团队概况|\/team(@\w+)?)$/i.test(text);
+  const sent = allLabels('sentBtn').includes(text) || /^(보낸\s*미션|sent|我发出的|\/sent(@\w+)?)$/i.test(text);
+  const langMenu = allLabels('langBtn').includes(text) || /^(언어|language|语言|\/lang(@\w+)?)$/i.test(text);
+  const me = /^\/me(@\w+)?$/.test(text) || /^(내\s*미션|my\s+missions|我的任务)$/i.test(text);
+  let btnTarget = null;
+  for (const re of BOT_BTN) { const b = text.match(re); if (b && (btnTarget = byName(b[1]))) break; }
+  if (team || sent || langMenu || me || btnTarget) {
     if (!owner) return { kind: 'unlinked', chatId };
     if (team || sent) return { kind: team ? 'team' : 'sent', chatId, owner };
+    if (langMenu) return { kind: 'lang-menu', chatId, owner };
     return { kind: 'board', chatId, owner, member: me ? owner : btnTarget };
   }
   if (compose && owner && !text.startsWith('/')) {
     const mode = sendMode(owner, compose.target);
-    if (!mode) return { kind: 'act-denied', chatId, owner, action: 'add', text: sendDeniedText(owner, compose.target, members) };
-    const p = parseItems(chatId, text);
+    if (!mode) return { kind: 'act-denied', chatId, owner, action: 'add', text: sendDeniedText(owner, compose.target, members, lang) };
+    const p = parseItems(chatId, text, t);
     return p.items ? { kind: 'act', action: mode, chatId, owner, target: compose.target, items: p.items } : p;
   }
-  // 미션 명령: "<이름>[님][에게|한테|께][,:] <내용>" — 내용이 "미션설정/미션추가/미션완료 …" 면 그 명령, 아니면 미션 주기(팀원은 관리자에게 요청)
+  // 미션 명령: "<이름>[님][에게|한테|께][,:] <내용>" — 내용이 "미션설정/미션추가/미션완료 …"(mission set/add/done, 任务设置/添加/完成)이면
+  // 그 명령, 아니면 미션 주기(팀원은 관리자에게 요청)
   const m = text.match(/^(\S+?)(?:님)?(?:에게|한테|께)?(?:[ \t]*[:,]?[ \t]+|[ \t]*[:,]?[ \t]*\n)([\s\S]+)$/);
   const target = m && byName(m[1]);
   if (!target) return { kind: 'menu', chatId, owner };
   if (!owner) return { kind: 'unlinked', chatId };
-  const kw = m[2].match(/^미션\s*(설정|추가|완료)\s*([\s\S]*)$/);
-  const action = kw ? { 설정: 'set', 추가: 'add', 완료: 'done' }[kw[1]] : 'add';
+  let kw = null;
+  for (const re of KEYWORDS) if ((kw = m[2].match(re))) break;
+  const action = kw ? KW_ACTION[kw[1].toLowerCase()] : 'add';
   const rest = kw ? kw[2] : m[2];
   const admin = ADMIN_ROLES.has(owner.role);
   if (action === 'done') {
-    const refs = rest.split(/[\s,]+/).filter(Boolean);
-    if (!refs.length) return { kind: 'act-error', chatId, error: `완료할 번호를 적어 주세요. 예: ${target.name} 미션완료 2` };
-    if (target.id !== owner.id && !admin) return { kind: 'act-denied', chatId, owner, action, text: '다른 사람의 미션 완료는 관리자만 할 수 있어요. 본인 미션만 완료하세요.' };
+    const refs = rest.split(/[\s,，、]+/).filter(Boolean);
+    if (!refs.length) return { kind: 'act-error', chatId, error: t.needNumber(dn(target, lang)) };
+    if (target.id !== owner.id && !admin) return { kind: 'act-denied', chatId, owner, action, text: t.deniedDoneOthers };
     return { kind: 'act', action, chatId, owner, target, refs };
   }
-  if (action === 'set' && !admin) return { kind: 'act-denied', chatId, owner, action, text: `미션 바꾸기(미션설정)는 관리자(${esc(adminNames(members))})만 할 수 있어요.` };
+  if (action === 'set' && !admin) return { kind: 'act-denied', chatId, owner, action, text: t.deniedSet(esc(adminNames(members, lang))) };
   const mode = action === 'set' ? 'set' : sendMode(owner, target);
-  if (!mode) return { kind: 'act-denied', chatId, owner, action, text: sendDeniedText(owner, target, members) };
-  const p = parseItems(chatId, rest);
+  if (!mode) return { kind: 'act-denied', chatId, owner, action, text: sendDeniedText(owner, target, members, lang) };
+  const p = parseItems(chatId, rest, t);
   return p.items ? { kind: 'act', action: mode, chatId, owner, target, items: p.items } : p;
 }
 
 // 확인 메시지(완료는 번호를 지금 목록의 미션으로 바꿔 보여 주고, 확인 때는 그 ID 로 처리)
-export function confirmText(d, picked = []) {
-  const n = `<b>${esc(d.target.name)}</b>님`;
-  if (d.action === 'done') return [`☑️ ${n}의 미션을 완료할까요?`, ...picked.map((x) => `• [${x.id}] ${esc(x.title)}`)].join('\n');
-  const head = d.action === 'set' ? `♻️ ${n}의 남은 미션을 이 목록으로 바꿀까요? (지금 남은 미션은 지우지 않고 보관)`
-    : d.action === 'request' ? `📨 ${n}에게 이 미션을 요청할까요? (${esc(d.target.name)}님이 수락하면 미션이 돼요)` : `📝 ${n}에게 이 미션을 줄까요?`;
-  return [head, ...d.items.slice(0, 10).map((it) => `• ${esc(it.title)}`), ...(d.items.length > 10 ? [`… 외 ${d.items.length - 10}개`] : [])].join('\n');
+export function confirmText(d, picked = [], lang = 'ko') {
+  const t = tr(lang);
+  const n = esc(dn(d.target, lang));
+  if (d.action === 'done') return [t.confirmDone(n), ...picked.map((x) => `• [${x.id}] ${esc(x.title)}`)].join('\n');
+  const head = d.action === 'set' ? t.confirmSet(n) : d.action === 'request' ? t.confirmRequest(n) : t.confirmGive(n);
+  return [head, ...d.items.slice(0, 10).map((it) => `• ${esc(it.title)}`), ...(d.items.length > 10 ? [t.andMore(d.items.length - 10)] : [])].join('\n');
 }
 
 // 확인(✅)을 누른 뒤 저장할 내용 — 봇(bot.mjs)과 봇 서버(worker)가 같이 쓴다
@@ -683,15 +740,16 @@ export const ACTIONS = {
   done: { label: '미션완료', apply: (p) => (db, ms, actor) => ({ done: completeMissions(db, p.targetId, p.ids, { by: actor.id, members: ms }), changed: true }) },
 };
 
-// 저장 결과 문구(확인 메시지를 이 문구로 바꾼다)
-export function resultText(action, targetName, w) {
+// 저장 결과 문구(확인 메시지를 이 문구로 바꾼다). targetName: 보는 사람의 언어로 표시할 이름(이스케이프 전).
+export function resultText(action, targetName, w, lang = 'ko') {
+  const t = tr(lang);
   const n = esc(targetName);
   const r = w.result;
-  if (w.unchanged) return `변경 없음 — ${n}님에게 이미 그대로 있어요.`;
-  const out = action === 'done' ? [`☑️ ${n}님의 미션을 완료했어요`, ...r.done.map((m) => `• [${m.id}] ${esc(m.title)}`)]
-    : action === 'set' ? [`♻️ ${n}님의 미션을 바꿨어요 — 새 ${r.added.length} · 유지 ${r.kept.length} · 보관 ${r.replaced.length}`]
-      : [action === 'request' ? `📨 ${n}님에게 미션을 요청했어요` : `✅ ${n}님에게 미션을 줬어요`, ...r.added.map((m) => `• [${m.id}] ${esc(m.title)}`), ...(r.skipped.length ? [`(이미 있어서 건너뜀: ${r.skipped.map(esc).join(', ')})`] : [])];
-  out.push('', action === 'request' ? `${n}님이 수락하거나 거절하면 알려 드려요.` : action === 'done' ? '곧 텔레그램 알림이 가요(미션을 준 사람에게는 완료 알림).' : `${n}님에게 곧 텔레그램 알림이 가요.`);
+  if (w.unchanged) return t.unchanged(n);
+  const out = action === 'done' ? [t.didDone(n), ...r.done.map((m) => `• [${m.id}] ${esc(m.title)}`)]
+    : action === 'set' ? [t.didSet(n, r.added.length, r.kept.length, r.replaced.length)]
+      : [action === 'request' ? t.didRequest(n) : t.didGive(n), ...r.added.map((m) => `• [${m.id}] ${esc(m.title)}`), ...(r.skipped.length ? [t.skipped(r.skipped.map(esc).join(', '))] : [])];
+  out.push('', action === 'request' ? t.afterRequest(n) : action === 'done' ? t.afterDone : t.afterGive(n));
   return out.join('\n');
 }
 
@@ -700,7 +758,8 @@ export function resolveRefs(db, memberId, refs) {
   return refs.map((r) => {
     const key = String(r).trim().toUpperCase();
     const m = /^\d+$/.test(key) ? open[Number(key) - 1] : open.find((x) => x.id === key);
-    if (!m) throw new Error(`미션을 찾지 못했어요: ${r} (남은 미션 번호: ${open.map((x, i) => i + 1).join(', ') || '없음'})`);
+    const left = open.map((x, i) => i + 1).join(', ');
+    if (!m) throw Object.assign(new Error(`미션을 찾지 못했어요: ${r} (남은 미션 번호: ${left || '없음'})`), { ref: String(r), left });
     return { id: m.id, title: m.title };
   });
 }

@@ -940,7 +940,7 @@ test('완료 알림 리뷰 회귀: "방금 완료" 줄 때문에 거절되면 �
 test('봇: 버튼판은 팀원 이름+봇, 한 줄에 3개, 늘 떠 있음', async () => {
   const { menuKeyboard } = await import('../mimic-note/bot.mjs');
   assert.deepEqual(menuKeyboard(M), {
-    keyboard: [[{ text: '창민봇' }, { text: '민호봇' }, { text: '유리봇' }], [{ text: '네이뜬봇' }, { text: '루카스봇' }], [{ text: '📋 팀 현황' }, { text: '📤 보낸 미션' }]],
+    keyboard: [[{ text: '창민봇' }, { text: '민호봇' }, { text: '유리봇' }], [{ text: '네이뜬봇' }, { text: '루카스봇' }], [{ text: '📋 팀 현황' }, { text: '📤 보낸 미션' }, { text: '🌐 언어' }]],
     resize_keyboard: true,
     is_persistent: true,
   });

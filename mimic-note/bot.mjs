@@ -5,6 +5,7 @@
 //   대전제(배정은 관리자만): 팀원이 보낸 것은 '요청'이고, 받은 관리자가 수락해야 미션이 된다. 팀원끼리는 주고받지 않는다.
 // - 알림: 새 미션·완료는 GitHub Actions 가 보내고(목록 메시지에도 ✅ 버튼), 요청·수락·거절은 이 봇이 바로 보낸다.
 // - 글 명령도 그대로: "창민 이거 결제해줘" · "창민 미션설정\n1. …" · "민호 미션완료 2"
+// - 🌐 언어: 사람마다 한국어·English·中文 중 고른다(미션 DB 의 langs). 봇 화면·버튼과 Actions 알림이 그 언어로 나간다.
 // 처음 연결(/start <일회용 코드>)도 처리한다(코드는 이 컴퓨터에서 telegram.mjs connect --no-wait 로 만든 것).
 //
 //   node mimic-note/bot.mjs                  실행(Ctrl+C 로 종료) — 켜져 있는 동안 답한다(꺼져 있을 때 누른 버튼은 켜지면 처리)
@@ -25,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import {
   NOTE_DIR, loadMembers, readEnv, telegramApi, validateDb, validateMembers, esc, BOT_NAME, menuKeyboard, menuText, missionsText,
   ownersFromEnv, decide, confirmText, resolveRefs, boardText, boardKeyboard, teamText, sentText, decideCallback, composePrompt,
-  requestNotice, respondNotice, respondRequest, ACTIONS, resultText, safeHead,
+  requestNotice, respondNotice, respondRequest, ACTIONS, resultText, safeHead, tr, dn, langOf, guessLang, setLang, langKeyboard, LANG_NAMES,
 } from './lib.mjs';
 import { processUpdates, applyLink, loadCodes, secretNames } from './telegram.mjs';
 import { mutate } from './mission.mjs';
@@ -76,10 +77,15 @@ async function main() {
   try {
     if ((await telegramApi(token, 'getMyName')).name !== BOT_NAME) await telegramApi(token, 'setMyName', { name: BOT_NAME });
   } catch (e) { console.log(`봇 이름 바꾸기 실패(나중에 다시): ${e.message}`); }
-  await telegramApi(token, 'setMyCommands', { commands: [
-    { command: 'start', description: '메뉴 열기' }, { command: 'me', description: '내 미션 보기' },
-    { command: 'team', description: '팀 현황' }, { command: 'sent', description: '내가 준·요청한 미션' },
-  ] }).catch(() => {});
+  const COMMANDS = {
+    ko: ['메뉴 열기', '내 미션 보기', '팀 현황', '내가 준·요청한 미션', '언어 바꾸기'],
+    en: ['Open the menu', 'My missions', 'Team status', 'Missions I gave or requested', 'Change language'],
+    zh: ['打开菜单', '我的任务', '团队概况', '我分配或请求的任务', '切换语言'],
+  };
+  for (const [l, d] of Object.entries(COMMANDS)) {
+    const commands = ['start', 'me', 'team', 'sent', 'lang'].map((command, i) => ({ command, description: d[i] }));
+    await telegramApi(token, 'setMyCommands', { commands, ...(l === 'ko' ? {} : { language_code: l }) }).catch(() => {});
+  }
   if (!secretNames()) console.log('⚠️ 이 컴퓨터의 gh 계정은 GitHub 비밀값을 등록할 수 없어, 봇으로 연결해도 자동 알림 등록은 관리자가 따로 해야 합니다.');
   console.log(`${BOT_NAME} 봇 실행 중: @${me.username} — 이 컴퓨터에서만 켜 두세요(Ctrl+C 로 종료)`);
 
@@ -110,6 +116,7 @@ async function main() {
     return memo.get(k);
   };
   const trusted = bs.trusted; // 이 봇이 만든 커밋 → 그 부모(core.mjs safeHead)
+  let lastLangs = {}; // 마지막으로 읽은 팀원별 언어 — GitHub 를 읽기 전에 보내는 문구(만료 버튼·오류)도 그 사람 언어로
   const state = async () => {
     let sha = verifiedSha();
     if (trusted.size) {
@@ -122,6 +129,7 @@ async function main() {
     const members = read(MEMBERS_FILE, sha).json.members;
     const db = read(DB_FILE, sha).json;
     if (validateMembers(members).length || validateDb(db, members).length) throw new Error('확인된 데이터가 올바르지 않아요');
+    lastLangs = db.langs || {};
     return { members, db };
   };
   const save = async (apply, describe, as) => {
@@ -140,12 +148,14 @@ async function main() {
   const pending = new Map(); // 확인 대기 중인 저장(10분, 이 프로그램 메모리에만)
   const compose = new Map(); // 📨 버튼을 누르고 미션 내용을 기다리는 대화(10분)
   const busy = new Set(); // 처리 중인 요청(수락·거절 두 번 누름 방지)
-  const ask = async (chatId, fromId, d, picked = []) => {
+  const ask = async (chatId, fromId, d, picked = [], lang = 'ko') => {
+    const t = tr(lang);
     const key = crypto.randomBytes(6).toString('base64url');
     for (const [k, v] of pending) if (Date.now() - v.at > PENDING_MS) pending.delete(k);
-    pending.set(key, { action: d.action, chatId, fromId, ownerId: d.owner.id, targetId: d.target.id, targetName: d.target.name, items: d.items, ids: picked.map((x) => x.id), at: Date.now() });
-    const yes = { add: '✅ 보내기', request: '📨 요청 보내기', set: '✅ 바꾸기', done: '✅ 완료' }[d.action];
-    await send(chatId, confirmText(d, picked), { reply_markup: { inline_keyboard: [[{ text: yes, callback_data: `g:${key}` }, { text: '취소', callback_data: `x:${key}` }]] } });
+    // targetName: 커밋 메시지용(한글 이름), shown: 화면에 보일 이름(누른 사람의 언어)
+    pending.set(key, { action: d.action, chatId, fromId, ownerId: d.owner.id, targetId: d.target.id, targetName: d.target.name, shown: dn(d.target, lang), lang, items: d.items, ids: picked.map((x) => x.id), at: Date.now() });
+    const yes = { add: t.yesAdd, request: t.yesRequest, set: t.yesSet, done: t.yesDone }[d.action];
+    await send(chatId, confirmText(d, picked, lang), { reply_markup: { inline_keyboard: [[{ text: yes, callback_data: `g:${key}` }, { text: t.cancelBtn, callback_data: `x:${key}` }]] } });
   };
 
   let offset;
@@ -164,6 +174,7 @@ async function main() {
       const chatOwners = ownersFromEnv(env);
       const chatOf = (memberId) => { for (const [chat, id] of chatOwners) if (id === memberId) return chat; return null; };
       const replyTo = String(u.message?.chat?.id || u.callback_query?.message?.chat?.id || '');
+      let lang = chatOwners.has(replyTo) ? langOf({ langs: lastLangs }, chatOwners.get(replyTo)) : guessLang(u.message?.from?.language_code || u.callback_query?.from?.language_code);
       try {
         if (u.callback_query) {
           const cq = u.callback_query;
@@ -174,61 +185,76 @@ async function main() {
           // 확인·취소: 그 확인을 만든 사람만, 10분 안에, 한 번만
           if (/^[gx]:/.test(data)) {
             const p = pending.get(data.slice(2));
-            if (!p || p.chatId !== replyTo || p.fromId !== String(cq.from?.id)) { await answer('이미 처리했거나 만료된 버튼이에요.'); continue; }
+            if (!p || p.chatId !== replyTo || p.fromId !== String(cq.from?.id)) { await answer(tr(lang).expired); continue; }
             pending.delete(data.slice(2));
+            lang = p.lang || lang;
+            const t = tr(lang);
             await answer();
-            if (Date.now() - p.at > PENDING_MS) { await edit(replyTo, mid, '확인 시간이 지났어요. 다시 보내 주세요.'); continue; }
-            if (data[0] !== 'g') { await edit(replyTo, mid, '취소했어요.'); continue; }
-            await edit(replyTo, mid, '저장 중…'); // 버튼을 없애 두 번 눌리지 않게
+            if (Date.now() - p.at > PENDING_MS) { await edit(replyTo, mid, t.timedOut); continue; }
+            if (data[0] !== 'g') { await edit(replyTo, mid, t.cancelled); continue; }
+            await edit(replyTo, mid, t.saving); // 버튼을 없애 두 번 눌리지 않게
             const spec = ACTIONS[p.action];
             try {
               const w = await save(spec.apply(p), (r) => `${p.targetName} ${spec.label}${r.added ? ` ${r.added.length}개` : ''}`, p.ownerId);
-              await edit(replyTo, mid, resultText(p.action, p.targetName, w), { inline_keyboard: [[{ text: `👀 ${p.targetName}님 미션 보기`, callback_data: `v:${p.targetId}` }]] });
+              const shown = p.shown || p.targetName;
+              await edit(replyTo, mid, resultText(p.action, shown, w, lang), { inline_keyboard: [[{ text: t.viewBtn(shown), callback_data: `v:${p.targetId}` }]] });
               console.log(`${new Date().toISOString()} ${w.actor.name} → ${p.targetName} ${spec.label} (${w.commit ? w.commit.slice(0, 7) : '변경 없음'})`);
               if (p.action === 'request' && w.result.added.length) {
                 const to = chatOf(p.targetId);
                 if (to) {
-                  const n = requestNotice(w.actor, w.result.added);
-                  await send(to, n.text, { reply_markup: n.reply_markup }).catch((e) => send(replyTo, `(${esc(p.targetName)}님에게 요청 알림을 보내지 못했어요: ${esc(e.message)} — ${esc(p.targetName)}봇에서는 보여요)`));
-                } else await send(replyTo, `(${esc(p.targetName)}님은 아직 텔레그램 미연결이라, 연결하면 ${esc(p.targetName)}봇에서 요청이 보여요)`);
+                  const n = requestNotice(w.actor, w.result.added, langOf(w.db, p.targetId)); // 받는 사람의 언어로
+                  await send(to, n.text, { reply_markup: n.reply_markup }).catch((e) => send(replyTo, t.notifyFail(esc(shown), esc(e.message))));
+                } else await send(replyTo, t.targetUnlinked(esc(shown)));
               }
             } catch (e) {
-              await edit(replyTo, mid, `❌ 저장하지 못했어요: ${esc(e.message)}`);
+              await edit(replyTo, mid, t.saveFail(esc(e.message)));
             }
             continue;
           }
           const viewerId = chatOwners.get(replyTo);
-          if (!viewerId) { await answer('먼저 관리자에게 받은 본인 연결 링크로 연결해 주세요.'); continue; }
+          if (!viewerId) { await answer(tr(lang).linkFirst); continue; }
           const { members, db } = await state();
           const viewer = members.find((m) => m.id === viewerId) || null;
-          const d = decideCallback(data, { viewer, members, db });
-          if (d.kind === 'stale' || d.kind === 'pending') { await answer(d.text || '이미 처리했거나 만료된 버튼이에요.'); continue; }
+          lang = viewer ? langOf(db, viewer.id) : lang;
+          const t = tr(lang);
+          const d = decideCallback(data, { viewer, members, db, lang });
+          if (d.kind === 'stale' || d.kind === 'pending') { await answer(d.text || t.expired); continue; }
           if (d.kind === 'board') {
             await answer();
-            await edit(replyTo, mid, boardText(viewer, d.member, db, members), boardKeyboard(viewer, d.member, db));
+            await edit(replyTo, mid, boardText(viewer, d.member, db, members, lang), boardKeyboard(viewer, d.member, db, lang));
+          } else if (d.kind === 'lang') {
+            await answer();
+            try {
+              await save((db2, ms, actor) => setLang(db2, actor.id, d.lang, actor.id), () => `${viewer.name} 텔레그램 언어 ${d.lang}`, viewer.id);
+              await edit(replyTo, mid, `🌐 ${LANG_NAMES[d.lang]}`);
+              await send(replyTo, `${tr(d.lang).langSet}\n\n${menuText(viewer, members, { lang: d.lang })}`, { reply_markup: menuKeyboard(members, d.lang) });
+            } catch (e) {
+              await send(replyTo, t.saveFail(esc(e.message)));
+            }
           } else if (d.kind === 'compose') {
             await answer();
             compose.set(replyTo, { target: d.target, at: Date.now() });
-            await send(replyTo, composePrompt(d.target, d.mode));
+            await send(replyTo, composePrompt(d.target, d.mode, lang));
           } else if (d.kind === 'confirm-done') {
             await answer();
-            await ask(replyTo, String(cq.from?.id), { action: 'done', owner: viewer, target: d.target }, d.picked);
+            await ask(replyTo, String(cq.from?.id), { action: 'done', owner: viewer, target: d.target }, d.picked, lang);
           } else if (d.kind === 'respond') {
-            if (busy.has(d.mission.id)) { await answer('처리 중이에요.'); continue; }
+            if (busy.has(d.mission.id)) { await answer(t.busy); continue; }
             busy.add(d.mission.id);
-            await answer(d.accept ? '수락하는 중…' : '거절하는 중…');
+            await answer(d.accept ? t.accepting : t.declining);
             try {
               const label = d.accept ? '요청수락' : '요청거절';
               const w = await save((db2, ms, actor) => respondRequest(db2, d.mission.id, d.accept, actor.id, ms), () => `${d.target.name} ${label} ${d.mission.id}`, viewer.id);
               const m = w.result.mission;
               const assignee = w.members.find((x) => x.id === m.assignee) || { id: m.assignee, name: m.assignee };
               await telegramApi(token, 'editMessageReplyMarkup', { chat_id: replyTo, message_id: mid, reply_markup: withoutMission(cq.message.reply_markup, m.id) }).catch(() => {});
-              await send(replyTo, d.accept ? `✅ 수락했어요 — ${esc(m.title)}\n${esc(assignee.name)}님 미션에 들어갔어요(목록 알림이 곧 가요).` : `❌ 거절했어요 — ${esc(m.title)}`, { reply_markup: { inline_keyboard: [[{ text: `👀 ${assignee.name}님 미션 보기`, callback_data: `v:${assignee.id}` }]] } });
+              const an = dn(assignee, lang);
+              await send(replyTo, d.accept ? t.acceptedMsg(esc(m.title), esc(an)) : t.declinedMsg(esc(m.title)), { reply_markup: { inline_keyboard: [[{ text: t.viewBtn(an), callback_data: `v:${assignee.id}` }]] } });
               const reqChat = m.createdBy !== w.actor.id && chatOf(m.createdBy);
-              if (reqChat) await send(reqChat, respondNotice(m, d.accept, w.actor, assignee)).catch((e) => console.log(`요청 결과 알림 실패: ${e.message}`));
+              if (reqChat) await send(reqChat, respondNotice(m, d.accept, w.actor, assignee, langOf(w.db, m.createdBy))).catch((e) => console.log(`요청 결과 알림 실패: ${e.message}`));
               console.log(`${new Date().toISOString()} ${w.actor.name} ${label} ${m.id} (${w.commit ? w.commit.slice(0, 7) : '변경 없음'})`);
             } catch (e) {
-              await send(replyTo, `❌ 처리하지 못했어요: ${esc(e.message)}`);
+              await send(replyTo, t.respondFail(esc(e.message)));
             } finally {
               busy.delete(d.mission.id);
             }
@@ -245,44 +271,48 @@ async function main() {
             const codes = loadCodes();
             const r = processUpdates([u], { codes, chatOwners, now: Date.now() });
             for (const l of r.links) {
-              const { member } = await applyLink(l, { members: localMembers, codes, token });
-              await send(l.chatId, menuText(member, localMembers), { reply_markup: menuKeyboard(localMembers) });
+              const { member } = await applyLink(l, { members: localMembers, codes, token, lang });
+              await send(l.chatId, menuText(member, localMembers, { lang }), { reply_markup: menuKeyboard(localMembers, lang) });
+              await send(l.chatId, tr(lang).langPrompt, { reply_markup: langKeyboard() }); // 처음 연결하면 언어부터 고르게
             }
-            for (const x of r.replies) await send(x.chatId, esc(x.text));
-          } else await send(replyTo, menuText(null), { reply_markup: menuKeyboard(localMembers) });
+            for (const x of r.replies) await send(x.chatId, esc(x.key ? tr(lang)[x.key] : x.text));
+          } else await send(replyTo, menuText(null, [], { lang }), { reply_markup: menuKeyboard(localMembers, lang) });
           continue;
         }
         const { members, db } = await state();
+        lang = langOf(db, chatOwners.get(replyTo));
+        const t = tr(lang);
         const c = compose.get(replyTo);
         const active = c && Date.now() - c.at < PENDING_MS ? { target: members.find((m) => m.id === c.target.id) || c.target } : null;
-        const d = decide(msg, { members, chatOwners, compose: active });
+        const d = decide(msg, { members, chatOwners, compose: active, lang });
         if (d.kind !== 'act-error') compose.delete(replyTo); // 내용이 잘못됐으면 다시 적을 수 있게 남겨 둔다
         if (d.kind === 'ignore') continue;
         if (d.kind === 'link') { // 이미 연결된 대화에서 연결 링크를 누름(남의 링크 등) — 연결은 바꾸지 않는다
           const me2 = members.find((m) => m.id === chatOwners.get(replyTo));
-          await send(replyTo, `이 대화는 이미 <b>${esc(me2?.name || '')}</b>님으로 연결돼 있어요. 다른 사람의 연결 링크는 그 사람 <b>본인 텔레그램</b>에서 열어야 해요(링크는 그대로 쓸 수 있어요).`);
+          await send(replyTo, t.alreadyLinked(esc(dn(me2, lang))));
           continue;
         }
-        if (d.kind === 'menu' || d.kind === 'unlinked') await send(d.chatId, menuText(d.owner || null, members), { reply_markup: menuKeyboard(members) });
-        else if (d.kind === 'cancel') await send(d.chatId, '취소했어요.');
+        if (d.kind === 'menu' || d.kind === 'unlinked') await send(d.chatId, menuText(d.owner || null, members, { lang }), { reply_markup: menuKeyboard(members, lang) });
+        else if (d.kind === 'cancel') await send(d.chatId, t.cancelled);
+        else if (d.kind === 'lang-menu') await send(d.chatId, t.langPrompt, { reply_markup: langKeyboard() });
         else if (d.kind === 'board') {
-          await send(d.chatId, boardText(d.owner, d.member, db, members), { reply_markup: boardKeyboard(d.owner, d.member, db) });
+          await send(d.chatId, boardText(d.owner, d.member, db, members, lang), { reply_markup: boardKeyboard(d.owner, d.member, db, lang) });
           console.log(`${new Date().toISOString()} ${d.owner.name} → ${d.member.name}봇`);
-        } else if (d.kind === 'team') await send(d.chatId, teamText(members, db, new Set(chatOwners.values())));
-        else if (d.kind === 'sent') await send(d.chatId, sentText(d.owner, members, db));
+        } else if (d.kind === 'team') await send(d.chatId, teamText(members, db, new Set(chatOwners.values()), lang));
+        else if (d.kind === 'sent') await send(d.chatId, sentText(d.owner, members, db, lang));
         else if (d.kind === 'act-denied') await send(d.chatId, d.text);
         else if (d.kind === 'act-error') await send(d.chatId, esc(d.error));
         else if (d.kind === 'act') {
           let picked = [];
           if (d.action === 'done') {
-            try { picked = resolveRefs(db, d.target.id, d.refs); } catch (e) { await send(d.chatId, esc(e.message)); continue; }
+            try { picked = resolveRefs(db, d.target.id, d.refs); } catch (e) { await send(d.chatId, esc(e.ref != null ? t.notFound(e.ref, e.left) : e.message)); continue; }
           }
-          await ask(d.chatId, String(msg.from?.id), d, picked);
+          await ask(d.chatId, String(msg.from?.id), d, picked, lang);
         }
       } catch (e) {
         console.log(`처리 실패: ${e.message}`);
         if (u.callback_query) await telegramApi(token, 'answerCallbackQuery', { callback_query_id: u.callback_query.id }).catch(() => {}); // 버튼 로딩 표시를 끝낸다
-        if (replyTo) await send(replyTo, `지금 처리하지 못했어요(${esc(e.message)}). 잠시 뒤 다시 해 주세요.`).catch(() => {});
+        if (replyTo) await send(replyTo, tr(lang).cannotNow(esc(e.message))).catch(() => {});
       }
     }
   }

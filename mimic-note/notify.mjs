@@ -19,7 +19,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ADMIN_ROLES, findMember, memberByGithub, openMissions, doneMissions, validateDb, validateMembers, chatIdFor, telegramApi , esc, clip, renderTelegram, renderDoneNotice, listKeyboard } from './lib.mjs';
+import { ADMIN_ROLES, findMember, memberByGithub, openMissions, doneMissions, validateDb, validateMembers, chatIdFor, telegramApi , esc, clip, renderTelegram, renderDoneNotice, listKeyboard, langOf, dn } from './lib.mjs';
 
 export { renderTelegram, renderDoneNotice };
 
@@ -58,6 +58,12 @@ export function verifyChange({ base, head, actor, repoAdmin = false }) {
     if (!selfDone) v.push(`${label}: ${m.id} 수정(${keys.join(', ')}) — 팀원은 본인 미션 완료만 가능`);
   }
   for (const id of before.keys()) if (!seen.has(id) && !isOwner) v.push(`${label}: ${id} 삭제(대표관리자만)`);
+  // 텔레그램 언어(langs): 팀원은 본인 것만
+  if (!isAdmin) {
+    const bl = base.db.langs || {};
+    const hl = head.db.langs || {};
+    for (const k of new Set([...Object.keys(bl), ...Object.keys(hl)])) if (bl[k] !== hl[k] && k !== who?.id) v.push(`${label}: ${k} 의 텔레그램 언어 변경(본인 것만)`);
+  }
   return v;
 }
 
@@ -219,7 +225,7 @@ export async function runNotify({ env, git, gh, send, relay = null, ledger, now 
       const jaMap = new Map();
       for (const x of [...(st.justAdded || []), ...(justAdded.get(id) || [])]) if (x?.id && stillOpen(x.id)) jaMap.set(x.id, { id: x.id, title: titleOf(x.id, x.title), createdBy: x.createdBy });
       const ja = [...jaMap.values()].slice(-10);
-      const byName = (mid) => cur.members.find((x) => x.id === mid)?.name || mid;
+      const byName = (mid) => { const x = cur.members.find((y) => y.id === mid); return x ? dn(x, langOf(cur.db, id)) : mid; }; // 받는 사람의 언어로
       let text = jd.length || ja.length ? renderTelegram(member, cur.db, { justDone: jd.map((x) => x.title), justAdded: ja.map((x) => ({ title: x.title, by: byName(x.createdBy) })) }) : plain;
       if (text.replace(/<[^>]+>/g, '').length > 4000) text = plain; // 텔레그램 4096자 제한 — "방금 완료" 줄 때문에 막히지 않게
       if (st.sentHash === hash && forced !== id) {
@@ -270,7 +276,7 @@ export async function runNotify({ env, git, gh, send, relay = null, ledger, now 
       if (!to || !who || !items.length) continue;
       const base = { member: to.id, kind: 'done-notice', about: who.id };
       try {
-        const r = await deliver(to.id, renderDoneNotice(who, items, cur.db, cur.members));
+        const r = await deliver(to.id, renderDoneNotice(who, items, cur.db, cur.members, langOf(cur.db, to.id)));
         results.push(r.status === 'sent' ? { ...base, status: 'sent', messageId: r.messageId } : { ...base, status: r.status });
       } catch (e) {
         keep.push({ ...n, items, tries: (n.tries || 0) + 1 });
