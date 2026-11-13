@@ -457,3 +457,16 @@ test('리뷰 회귀: 중계 모드에서 워커가 모르는 사람(다른 컴�
   assert.deepEqual(r.results.map((x) => [x.member, x.status]), [['yuri', 'sent']]);
   assert.deepEqual(direct, ['1003']);
 });
+
+test('연결 링크: [시작]을 눌렀는데 서버 오류가 나면 링크는 그대로 — 같은 링크로 다시 [시작]하면 연결', async () => {
+  const w = world();
+  await w.importer({ owners: {}, codes: [{ code: 'RETRYcode1234567', member: 'lucas', ttl: 3600 }] }); // 확인 상태가 아직 없음 → 연결 중 오류
+  await w.msg(5005, '/start RETRYcode1234567');
+  assert.match(w.lastText(), /지금 처리하지 못했어요/);
+  assert.ok(w.kv.has('code:RETRYcode1234567'), '오류 때는 링크를 쓰지 않음');
+  assert.equal(w.kv.has('member:lucas'), false);
+  await w.relay('/relay/verified', { sha: w.root });
+  await w.msg(5005, '/start RETRYcode1234567');
+  assert.equal(w.kv.get('member:lucas'), '5005');
+  assert.equal(w.kv.has('code:RETRYcode1234567'), false, '연결되면 그때 씀');
+});
