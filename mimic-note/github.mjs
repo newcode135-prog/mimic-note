@@ -29,8 +29,8 @@ export function createGithub(repo = REPO) {
     repo,
     whoami: () => gh(['api', 'user', '--jq', '.login']),
     access: () => api(`repos/${repo}`).permissions || {},
-    readFile(file) {
-      const r = api(`repos/${repo}/contents/${file}?ref=main`);
+    readFile(file, ref = 'main') {
+      const r = api(`repos/${repo}/contents/${file}?ref=${ref}`);
       return { text: Buffer.from(r.content, 'base64').toString('utf8'), sha: r.sha };
     },
     writeFile(file, text, sha, message) {
@@ -43,6 +43,16 @@ export function createGithub(repo = REPO) {
         if (/does not match|but expected/i.test(e.stderr || e.message)) return { conflict: true };
         throw e;
       }
+    },
+    // GitHub Actions(notify.mjs)가 마지막으로 "확인한 상태" 커밋(로그의 MIMIC_VERIFIED). 모르면 null.
+    verifiedSha() {
+      for (const r of api(`repos/${repo}/actions/workflows/${WORKFLOW}/runs?status=completed&per_page=5`).workflow_runs) {
+        try {
+          const m = gh(['run', 'view', String(r.id), '-R', repo, '--log']).match(/MIMIC_VERIFIED ([0-9a-f]{40})/);
+          if (m) return m[1];
+        } catch { /* 로그 없음 → 다음 실행 */ }
+      }
+      return null;
     },
     latestRunId: () => api(`repos/${repo}/actions/workflows/${WORKFLOW}/runs?per_page=1`).workflow_runs[0]?.id || 0,
     runs: (query) => api(`repos/${repo}/actions/workflows/${WORKFLOW}/runs?per_page=20&${query}`).workflow_runs,

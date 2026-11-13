@@ -293,9 +293,12 @@ test('Actions 시나리오 4·13: 민호 미션이 main 에 반영되면 민호 
   assert.deepEqual(r.problems, []);
   assert.deepEqual(statuses(r), { minho: 'sent' });
   assert.deepEqual(tg.sent.map((s) => s.chatId), ['1002']);
-  assert.equal(tg.sent[0].text, renderTelegram(M[1], db1));
+  // 창민이 준 미션이라 맨 위에 "🆕 새 미션 … (창민님이 줌)" — 중복 판단 해시는 그 줄을 뺀 목록 기준
+  const given = openMissions(db1, 'minho').map((m) => ({ title: m.title, by: '창민' }));
+  assert.equal(tg.sent[0].text, renderTelegram(M[1], db1, { justAdded: given }));
+  assert.ok(tg.sent[0].text.includes('🆕 새 미션: 로그인 UI 개발 (창민님이 줌)'));
   assert.equal(ledger.verifiedSha, c1);
-  assert.equal(ledger.members.minho.sentHash, hashText(tg.sent[0].text));
+  assert.equal(ledger.members.minho.sentHash, hashText(renderTelegram(M[1], db1)));
   // 다음 push: 유리만 바뀜 → 유리에게만
   const db2 = clone(db1);
   setMissions(db2, '유리', parseMissionList('1. 유리 업무'), 'changmin', M, T);
@@ -925,4 +928,127 @@ test('완료 알림 리뷰 회귀: "방금 완료" 줄 때문에 거절되면 �
   assert.match(sent.find((s) => s.chatId === '1002').text, /📊 진행률 1\/3/);
   assert.equal(ledger.members.minho.justDone, undefined);
   assert.equal(ledger.members.minho.pending, false);
+});
+
+// ---------------- 코어 오브 미믹노트 봇 ----------------
+
+test('봇: 버튼판은 팀원 이름+봇, 한 줄에 3개, 늘 떠 있음', async () => {
+  const { menuKeyboard } = await import('../mimic-note/bot.mjs');
+  assert.deepEqual(menuKeyboard(M), {
+    keyboard: [[{ text: '창민봇' }, { text: '민호봇' }, { text: '유리봇' }], [{ text: '네이뜬봇' }, { text: '루카스봇' }]],
+    resize_keyboard: true,
+    is_persistent: true,
+  });
+});
+
+test('봇: 본인 버튼이면 미션, 남의 버튼은 거절, 미연결은 연결 안내, 단체방은 무시, /start 는 메뉴, /start 코드는 연결', async () => {
+  const { decide, missionsText, menuText } = await import('../mimic-note/bot.mjs');
+  const chatOwners = new Map([['1002', 'minho'], ['1003', 'yuri']]);
+  const msg = (id, text, type = 'private') => ({ chat: { id, type }, text });
+  const d = (m) => decide(m, { members: M, chatOwners });
+  assert.deepEqual(d(msg(1002, '민호봇')), { kind: 'missions', chatId: '1002', member: M[1] });
+  assert.deepEqual(d(msg(1002, '/me')), { kind: 'missions', chatId: '1002', member: M[1] });
+  assert.equal(d(msg(1002, '창민봇')).kind, 'deny');
+  assert.equal(d(msg(1002, '창민봇')).target.id, 'changmin');
+  assert.equal(d(msg(9999, '루카스봇')).kind, 'unlinked');
+  assert.equal(d(msg(1002, '민호봇', 'group')).kind, 'ignore');
+  assert.equal(d({ chat: { id: 1002, type: 'private' } }).kind, 'ignore');
+  assert.deepEqual(d(msg(1003, '/start')), { kind: 'menu', chatId: '1003', owner: M[2] });
+  assert.equal(d(msg(1003, '안녕')).kind, 'menu');
+  assert.equal(d(msg(9999, '/start s0xEsKkHmJ2289e1')).kind, 'link');
+  const db = empty();
+  setMissions(db, '민호', list3, 'changmin', M, T);
+  const t = missionsText(M[1], db);
+  assert.ok(t.startsWith(renderTelegram(M[1], db)));
+  assert.match(t, /<code>민호 미션완료 1<\/code>/);
+  assert.match(menuText(M[1]), /코어 오브 미믹노트[\s\S]*<b>민호봇<\/b>/);
+  assert.match(menuText(null), /본인 연결 링크/);
+});
+
+test('봇 미션 명령: "창민 이거 결제해줘"=추가, "미션설정"=바꾸기, "미션완료 2"=완료, 팀원은 남의 것 불가, 이름이 아니면 메뉴', async () => {
+  const { decide, confirmText, resolveRefs } = await import('../mimic-note/bot.mjs');
+  const chatOwners = new Map([['1002', 'minho'], ['1004', 'nathan']]);
+  const d = (id, text) => decide({ chat: { id, type: 'private' }, text }, { members: M, chatOwners });
+  const g = d(1002, '창민 이거 결제해줘');
+  assert.deepEqual([g.kind, g.action, g.owner.id, g.target.id, g.items], ['act', 'add', 'minho', 'changmin', [{ title: '이거 결제해줘', detail: '' }]]);
+  assert.equal(d(1002, '창민한테 이거 결제해줘').target.id, 'changmin');
+  assert.equal(d(1002, '유리님, 회의록 정리').target.id, 'yuri');
+  assert.deepEqual(d(1002, 'lucas\n1. A\n2. B').items.map((x) => x.title), ['A', 'B']);
+  assert.deepEqual(d(1002, '창민\n  1. A\n     세부\n  2. B').items, [{ title: 'A', detail: '세부' }, { title: 'B', detail: '' }], '첫 줄 들여쓰기도 유지');
+  assert.equal(d(1002, '창민 텔레그램 봇').action, 'add', '제목이 "봇"으로 끝나도 버튼으로 오해하지 않음');
+  const set = d(1002, '창민 미션설정\n1. A\n2. B');
+  assert.deepEqual([set.action, set.items.map((x) => x.title)], ['set', ['A', 'B']]);
+  assert.deepEqual([d(1002, '창민 미션추가\n4. D').action, d(1002, '창민 미션추가\n4. D').items[0].title], ['add', 'D']);
+  const done = d(1002, '창민 미션완료 1');
+  assert.deepEqual([done.kind, done.action, done.target.id, done.refs], ['act', 'done', 'changmin', ['1']], '봇이 안내한 "미션완료" 는 새 미션이 아니라 완료');
+  assert.deepEqual([d(1004, '네이뜬 미션완료 2 3').kind, d(1004, '네이뜬 미션완료 2 3').refs], ['act', ['2', '3']], '팀원도 본인 미션 완료는 가능');
+  assert.equal(d(1004, '민호 미션완료 1').kind, 'act-denied');
+  assert.equal(d(1004, '민호 이거 해줘').kind, 'act-denied');
+  assert.equal(d(1002, '민호 미션완료').kind, 'act-error');
+  assert.equal(d(9999, '민호 이거 해줘').kind, 'unlinked');
+  assert.equal(d(1002, '민호봇').kind, 'missions');
+  assert.equal(d(1002, '오늘 날씨 좋다').kind, 'menu');
+  assert.equal(d(1002, `창민 ${'가'.repeat(201)}`).kind, 'act-error');
+  assert.match(confirmText(g), /<b>창민<\/b>님에게 이 미션을 줄까요\?\n• 이거 결제해줘/);
+  assert.match(confirmText(set), /남은 미션을 이 목록으로 바꿀까요/);
+  const db = empty();
+  setMissions(db, '창민', list3, 'changmin', M, T);
+  const picked = resolveRefs(db, 'changmin', ['2']);
+  assert.deepEqual(picked, [{ id: 'M-0002', title: '파일 다운로드 API 테스트' }]);
+  assert.match(confirmText(done, picked), /완료할까요\?\n• \[M-0002\] 파일 다운로드 API 테스트/);
+  assert.throws(() => resolveRefs(db, 'changmin', ['9']), /찾지 못했어요/);
+});
+
+test('봇: chat id → 팀원은 .env 만으로(GitHub 를 부르기 전에), 형식이 틀린 JSON 은 무시', async () => {
+  const { ownersFromEnv } = await import('../mimic-note/bot.mjs');
+  const o = ownersFromEnv({ TELEGRAM_CHAT_ID_MINHO: '1002', TELEGRAM_CHAT_IDS: '{"yuri":"1003"}', OTHER: 'x' });
+  assert.deepEqual([...o.entries()].sort(), [['1002', 'minho'], ['1003', 'yuri']]);
+  assert.deepEqual([...ownersFromEnv({ TELEGRAM_CHAT_IDS: 'not json' }).entries()], []);
+});
+
+test('미션 주기 저장: 텔레그램으로 확인된 팀원(as) 이름으로 기록, 권한은 그 팀원 역할로, 확인 안 된 main·저장 계정 권한은 거절', async () => {
+  const dir = tempNote();
+  const { mutate } = await import('../mimic-note/mission.mjs');
+  const give = (gh, as) => mutate(gh, (db, ms, actor) => addMissions(db, 'changmin', [{ title: '이거 결제해줘' }], actor.id, ms), (r) => `창민 미션추가 ${r.added.length}개`, { as, via: '텔레그램' });
+  const github = fakeGithub({ dir, login: 'newcode135-prog' });
+  github.access = () => ({ push: true, admin: true });
+  const w = await give(github, 'yuri');
+  const m = JSON.parse(github.store.get(DB_FILE).text).missions[0];
+  assert.deepEqual([m.assignee, m.createdBy, m.title], ['changmin', 'yuri', '이거 결제해줘']);
+  assert.match(github.commits[0].message, /\(by 유리·텔레그램, newcode135-prog 계정으로 저장\)$/);
+  assert.ok(w.commit);
+  await assert.rejects(give(github, 'nathan'), /관리자가 아니라/);
+  // main 에 확인 안 된 변경이 있으면(확인된 커밋의 파일과 다르면) 저장 안 함
+  const tampered = fakeGithub({ dir, login: 'newcode135-prog' });
+  tampered.access = () => ({ push: true, admin: true });
+  tampered.atVerified = { [MEMBERS_FILE]: { text: '', sha: 'older' } };
+  await assert.rejects(give(tampered, 'yuri'), /확인되지 않은 변경/);
+  assert.equal(tampered.writes, 0);
+  const unknown = fakeGithub({ dir, login: 'newcode135-prog' });
+  unknown.access = () => ({ push: true, admin: true });
+  unknown.noVerified = true;
+  await assert.rejects(give(unknown, 'yuri'), /확인 상태를 알 수 없어/);
+  // 저장 계정이 관리자 아님(명부에 없는 계정·쓰기만) → Actions 가 막을 저장이므로 미리 거절
+  const weak = fakeGithub({ dir, login: 'mimic-bot' });
+  await assert.rejects(give(weak, 'yuri'), /저장소 관리자이거나 관리자 팀원/);
+  assert.equal(weak.writes, 0);
+});
+
+test('새 미션 알림: 다른 사람이 준 미션은 받는 사람 메시지 맨 위에 "🆕 새 미션 … (준 사람)", 스스로 넣은 건 표시 안 함', async () => {
+  const db0 = empty();
+  const git = fakeGit([files(db0)]);
+  const c0 = git.head();
+  const db1 = clone(db0);
+  addMissions(db1, '창민', [{ title: '이거 결제해줘' }], 'minho', M, {}, T); // 민호가 창민에게
+  addMissions(db1, '민호', [{ title: '내 할일' }], 'minho', M, {}, T); // 민호가 자기에게
+  const c1 = git.add(files(db1));
+  const tg = fakeTelegram();
+  const ledger = newLedger(c0);
+  const r = await runNotify({ env: pushEnv(git, c0, c1, 'newcode135-prog'), git, gh: ghOf({ [c1]: 'newcode135-prog' }), send: tg.send, ledger, now: () => T });
+  assert.deepEqual(rows(r).sort(), [['changmin', 'list', 'sent'], ['minho', 'list', 'sent']]);
+  const toChangmin = tg.sent.find((s) => s.chatId === '1001').text;
+  assert.match(toChangmin, /^🎯 <b>MIMIC NOTE<\/b>\n\n🆕 새 미션: 이거 결제해줘 \(민호님이 줌\)\n\n👤 <b>창민님의 미션<\/b>/);
+  assert.ok(!tg.sent.find((s) => s.chatId === '1002').text.includes('🆕'));
+  const again = await runNotify({ env: { ...ENV, EVENT_NAME: 'workflow_dispatch', INPUT_MEMBER: '창민' }, git, gh: ghOf({}), send: tg.send, ledger, now: () => T });
+  assert.deepEqual(rows(again), [['changmin', 'list', 'already-sent']]);
 });

@@ -22,7 +22,8 @@ export function fakeGithub({ dir, login = 'newcode135-prog', push = true, db = {
     store, commits, runs, put, writes: 0, dispatched: [],
     whoami: () => login,
     access: () => ({ push }),
-    readFile: (p) => ({ ...store.get(p) }),
+    readFile: (p, ref = 'main') => (ref === 'main' ? { ...store.get(p) } : { ...(gh.atVerified?.[p] || store.get(p)) }),
+    verifiedSha: () => (gh.noVerified ? null : 'v'.repeat(40)),
     writeFile(p, text, sha, message) {
       gh.writes += 1;
       beforeWrite?.(gh);

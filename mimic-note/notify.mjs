@@ -30,10 +30,16 @@ const num = (i) => KEYCAPS[i] || `${i + 1}.`;
 
 // 팀원 한 명의 텔레그램 메시지(HTML). 상위 3개는 크게, 설명과 4번부터는 눌러서 펼치기.
 // 제목·순서·진행률은 모두 DB 에서 계산한다. justDone: 이번 변경에서 끝낸 미션 제목(맨 위에 "✅ 방금 완료").
-export function renderTelegram(member, db, { justDone = [] } = {}) {
+// justAdded: 다른 사람이 새로 준 미션 [{ title, by }] (맨 위에 "🆕 새 미션: … (창민님이 줌)").
+export function renderTelegram(member, db, { justDone = [], justAdded = [] } = {}) {
   const open = openMissions(db, member.id);
   const done = doneMissions(db, member.id).length;
   const lines = ['🎯 <b>MIMIC NOTE</b>', ''];
+  if (justAdded.length) {
+    lines.push(...justAdded.slice(0, 3).map((x) => `🆕 새 미션: ${esc(clip(x.title, 120))}${x.by ? ` (${esc(x.by)}님이 줌)` : ''}`));
+    if (justAdded.length > 3) lines.push(`🆕 … 외 ${justAdded.length - 3}개`);
+    lines.push('');
+  }
   if (justDone.length) lines.push(...justDone.slice(0, 5).map((t) => `✅ 방금 완료: ${esc(clip(t, 120))}`), '');
   lines.push(`👤 <b>${esc(member.name)}님의 미션</b>`, '');
   if (!open.length) lines.push('🎉 남은 미션이 없어요!', '');
@@ -128,6 +134,7 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
   const covered = [];
   const candidates = new Set();
   const completed = new Map(); // 확인된 변경에서 todo → done 이 된 미션(id → 미션, 같은 미션은 한 번)
+  const added = new Map(); // 확인된 변경에서 새로 생긴 미션(다른 사람이 준 것만 알림에 표시)
   const head = git.head();
   const event = env.EVENT_NAME || 'workflow_dispatch';
   const owner = (env.GITHUB_REPOSITORY_OWNER || '').toLowerCase();
@@ -184,7 +191,10 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
       if (v.length) { report({ kind: 'unauthorized', sha: c, actor, detail: v }); continue; }
       changedMembers(base.db, next.db, next.members).forEach((id) => candidates.add(id));
       const was = new Map(base.db.missions.map((m) => [m.id, m]));
-      for (const m of next.db.missions) if (was.get(m.id)?.status === 'todo' && m.status === 'done') completed.set(m.id, m);
+      for (const m of next.db.missions) {
+        if (was.get(m.id)?.status === 'todo' && m.status === 'done') completed.set(m.id, m);
+        if (!was.has(m.id) && m.status === 'todo' && m.createdBy && m.createdBy !== m.assignee) added.set(m.id, m);
+      }
       verified = c;
       base = next;
     }
@@ -212,6 +222,9 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
   const titleOf = (id, fallback) => cur.db.missions.find((x) => x.id === id)?.title || fallback;
   const justDone = new Map();
   for (const m of completed.values()) justDone.set(m.assignee, [...(justDone.get(m.assignee) || []), { id: m.id, title: m.title }]);
+  const stillOpen = (id) => cur.db.missions.find((x) => x.id === id)?.status === 'todo';
+  const justAdded = new Map();
+  for (const m of added.values()) justAdded.set(m.assignee, [...(justAdded.get(m.assignee) || []), { id: m.id, title: m.title, createdBy: m.createdBy }]);
   const fresh = new Map();
   for (const m of completed.values()) {
     const to = cur.members.find((x) => x.id === m.createdBy);
@@ -237,11 +250,16 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
       const jdMap = new Map();
       for (const x of [...(st.justDone || []), ...(justDone.get(id) || [])]) if (x?.id && stillDone(x.id)) jdMap.set(x.id, { id: x.id, title: titleOf(x.id, x.title) });
       const jd = [...jdMap.values()].slice(-5);
-      let text = jd.length ? renderTelegram(member, cur.db, { justDone: jd.map((x) => x.title) }) : plain;
+      const jaMap = new Map();
+      for (const x of [...(st.justAdded || []), ...(justAdded.get(id) || [])]) if (x?.id && stillOpen(x.id)) jaMap.set(x.id, { id: x.id, title: titleOf(x.id, x.title), createdBy: x.createdBy });
+      const ja = [...jaMap.values()].slice(-10);
+      const byName = (mid) => cur.members.find((x) => x.id === mid)?.name || mid;
+      let text = jd.length || ja.length ? renderTelegram(member, cur.db, { justDone: jd.map((x) => x.title), justAdded: ja.map((x) => ({ title: x.title, by: byName(x.createdBy) })) }) : plain;
       if (text.replace(/<[^>]+>/g, '').length > 4000) text = plain; // 텔레그램 4096자 제한 — "방금 완료" 줄 때문에 막히지 않게
       if (st.sentHash === hash && forced !== id) {
         st.pending = false;
         delete st.justDone;
+        delete st.justAdded;
         results.push({ member: id, status: 'already-sent' });
         continue;
       }
@@ -249,6 +267,7 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
       if (!token || !chatId) {
         st.pending = true;
         if (jd.length) st.justDone = jd;
+        if (ja.length) st.justAdded = ja;
         results.push({ member: id, status: token ? 'unconnected' : 'unconfigured' });
         continue;
       }
@@ -264,10 +283,12 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
         if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
         Object.assign(st, { sentHash: hash, sentAt: now(), messageId: r.message_id, pending: false, lastError: null });
         delete st.justDone;
+        delete st.justAdded;
         results.push({ member: id, status: 'sent', messageId: r.message_id });
       } catch (e) {
         Object.assign(st, { pending: true, lastError: String(e.message).slice(0, 200) });
         if (jd.length) st.justDone = jd;
+        if (ja.length) st.justAdded = ja;
         results.push({ member: id, status: 'failed', error: String(e.message).slice(0, 200), code: e.code ?? null });
       }
     }
@@ -379,6 +400,7 @@ async function main() {
 
   console.log(`미믹노트 알림: 이벤트 ${env.EVENT_NAME} · main ${r.head.slice(0, 7)} · 확인된 상태 ${String(r.verified).slice(0, 7)}`);
   console.log(`MIMIC_COVERS ${JSON.stringify(r.covered)}`);
+  if (r.ledger.verifiedSha) console.log(`MIMIC_VERIFIED ${r.ledger.verifiedSha}`); // 봇이 "확인된 상태"를 읽는 줄
   for (const x of r.results) console.log(`MIMIC_RESULT ${JSON.stringify(x)}`);
   if (!r.results.length) console.log('보낼 대상 없음(바뀐 팀원·보류된 알림 없음)');
   for (const p of r.problems) {
