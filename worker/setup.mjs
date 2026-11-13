@@ -48,9 +48,17 @@ async function main() {
   console.log(`봇: @${me.username}`);
 
   console.log('① 클라우드플레어 로그인 확인…');
-  if (!/You are logged in/i.test(wrangler(['whoami'], { allowFail: true }))) {
-    console.log('   브라우저에서 클라우드플레어에 로그인(무료 가입 가능)하고 [Allow]를 누르세요.');
-    wrangler(['login'], { interactive: true });
+  const loggedIn = () => /You are logged in/i.test(wrangler(['whoami'], { allowFail: true }));
+  if (!loggedIn()) {
+    console.log('   브라우저가 열리면 클라우드플레어에 로그인(무료 가입 가능)하고 [Allow]를 누르세요 — 이 PC 의 브라우저에서, 2분 안에.');
+    wrangler(['login'], { interactive: true, allowFail: true });
+  }
+  if (!loggedIn()) {
+    // 브라우저 로그인이 안 되면(시간 초과·다른 기기에서 열림 등) API 토큰으로 — 이번 실행에만 쓰고 저장하지 않는다
+    console.log('   브라우저 로그인이 끝나지 않았어요. 대신 클라우드플레어 API 토큰을 넣어도 됩니다:');
+    console.log('   https://dash.cloudflare.com/profile/api-tokens → Create Token → "Edit Cloudflare Workers" 템플릿 → 계정 선택 → Create');
+    process.env.CLOUDFLARE_API_TOKEN = await askHidden('   클라우드플레어 API 토큰(화면에 표시되지 않음): ');
+    if (!loggedIn()) throw new Error('클라우드플레어 API 토큰으로도 로그인하지 못했습니다. 토큰 권한(Edit Cloudflare Workers)과 계정을 확인하세요.');
   }
   console.log('   로그인됨');
 
