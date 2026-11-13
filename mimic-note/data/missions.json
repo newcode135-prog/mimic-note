@@ -358,10 +358,11 @@
       "order": 6,
       "title": "미션 보내줘",
       "detail": "",
-      "status": "todo",
+      "status": "done",
       "createdBy": "minho",
       "createdAt": "2026-11-13T10:17:01.812Z",
-      "doneAt": null
+      "doneAt": "2026-11-13T12:20:18.236Z",
+      "doneBy": "yuri"
     },
     {
       "id": "M-0032",
