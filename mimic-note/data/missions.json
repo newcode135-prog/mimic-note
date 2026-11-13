@@ -139,10 +139,11 @@
       "order": 4,
       "title": "관리자 명령 익히기",
       "detail": "node mimic-note/mission.mjs list 로 전체 미션을 보고, add 사용법(--by 유리)을 익혀요. 연습용 미션은 올리지 말고, 플레이어 첫 미션은 창민님과 나눈 뒤 등록해요(대전제 7조 겹침 방지).",
-      "status": "todo",
+      "status": "done",
       "createdBy": "changmin",
       "createdAt": "2026-11-13T03:05:05.935Z",
-      "doneAt": null
+      "doneAt": "2026-11-13T12:18:51.524Z",
+      "doneBy": "yuri"
     },
     {
       "id": "M-0013",
