@@ -24,7 +24,11 @@ function gh(args, input) {
 }
 const api = (p) => JSON.parse(gh(['api', p]) || 'null');
 
+// `gh run view --log` 의 한 줄은 "<작업>\t<단계>\t<시각> <내용>". 내용 전체가 "MIMIC_VERIFIED <sha>" 인 줄만(notify.mjs 가 찍은 줄).
+export const parseVerified = (log) => String(log).match(/^[^\t\n]*\t[^\t\n]*\t\S+ MIMIC_VERIFIED ([0-9a-f]{40})\r?$/m)?.[1] || null;
+
 export function createGithub(repo = REPO) {
+  const touched = new Map();
   return {
     repo,
     whoami: () => gh(['api', 'user', '--jq', '.login']),
@@ -45,14 +49,34 @@ export function createGithub(repo = REPO) {
       }
     },
     // GitHub Actions(notify.mjs)가 마지막으로 "확인한 상태" 커밋(로그의 MIMIC_VERIFIED). 모르면 null.
+    // main 에서 돈 실행만, 취소·건너뛴 실행(로그 없음)은 넘기고, 로그 줄 전체가 "<시각> MIMIC_VERIFIED <sha>" 인 줄만 믿는다
+    // (수동 실행 입력값 같은 다른 글에 섞인 "MIMIC_VERIFIED …" 로 속지 않게).
     verifiedSha() {
-      for (const r of api(`repos/${repo}/actions/workflows/${WORKFLOW}/runs?status=completed&per_page=5`).workflow_runs) {
+      for (const r of api(`repos/${repo}/actions/workflows/${WORKFLOW}/runs?status=completed&per_page=20`).workflow_runs) {
+        if (r.head_branch !== 'main' || ['cancelled', 'skipped'].includes(r.conclusion)) continue;
         try {
-          const m = gh(['run', 'view', String(r.id), '-R', repo, '--log']).match(/MIMIC_VERIFIED ([0-9a-f]{40})/);
-          if (m) return m[1];
+          const sha = parseVerified(gh(['run', 'view', String(r.id), '-R', repo, '--log']));
+          if (sha) return sha;
         } catch { /* 로그 없음 → 다음 실행 */ }
       }
       return null;
+    },
+    // base 에서 head 까지 main 의 첫 부모 사슬(head → base 쪽 순서, base 는 빼고). head 가 base 의 후손이 아니면 null.
+    chain(base, head) {
+      const r = api(`repos/${repo}/compare/${base}...${head}`);
+      if (!['ahead', 'identical'].includes(r.status)) return null;
+      const parent = new Map(r.commits.map((c) => [c.sha, c.parents[0]?.sha]));
+      const out = [];
+      for (let c = head; c !== base; c = parent.get(c)) {
+        if (!parent.has(c) || out.length > 250) return null;
+        out.push(c);
+      }
+      return out;
+    },
+    // 그 커밋이 미션 데이터(missions.json·members.json)를 바꿨는지(첫 부모 기준). 커밋 내용은 안 바뀌므로 기억해 둔다.
+    touchesData(sha) {
+      if (!touched.has(sha)) touched.set(sha, (api(`repos/${repo}/commits/${sha}`).files || []).some((f) => [DB_FILE, MEMBERS_FILE].includes(f.filename) || [DB_FILE, MEMBERS_FILE].includes(f.previous_filename)));
+      return touched.get(sha);
     },
     headSha: () => api(`repos/${repo}/git/ref/heads/main`).object.sha,
     // head 커밋 위에만 새 커밋을 만들고 main 을 빨리감기로만 옮긴다(그사이 main 이 바뀌면 422 → 충돌로 다시)

@@ -7,14 +7,14 @@
 // - 글 명령도 그대로: "창민 이거 결제해줘" · "창민 미션설정\n1. …" · "민호 미션완료 2"
 // 처음 연결(/start <일회용 코드>)도 처리한다(코드는 이 컴퓨터에서 telegram.mjs connect --no-wait 로 만든 것).
 //
-//   node mimic-note/bot.mjs                  실행(Ctrl+C 로 종료) — 켜져 있는 동안만 답한다(버튼도 그때만 동작)
+//   node mimic-note/bot.mjs                  실행(Ctrl+C 로 종료) — 켜져 있는 동안 답한다(꺼져 있을 때 누른 버튼은 켜지면 처리)
 //   bash mimic-note/bot-install-macmini.sh   맥미니에 상시 실행으로 설치(권장)
 //
 // 신뢰 규칙
 // - 보낸 사람은 텔레그램 연결(일회용 코드로 만든 chat id ↔ 팀원)로만 확인한다. 역할·미션은 GitHub Actions 가 "확인한 상태"
 //   (MIMIC_VERIFIED)에서 읽는다 — 확인 안 된 변경(권한 없는 수정 등)은 보여 주지도, 근거로 쓰지도 않는다.
-//   예외: main 이 이 봇이 이번 실행에서 직접 만든 커밋(확인된 상태 위에서만 저장)이면 Actions 확인 전이라도 이어서 쓴다(연달아 누르기).
-//   내용이 아니라 커밋으로 믿으므로, 같은 내용으로 되돌린(revert) 남의 push 는 믿지 않는다.
+//   예외: 확인된 커밋 위에 이 봇이 직접 만든 커밋(+미션 데이터를 안 바꾼 코드·문서 커밋)만 있으면 Actions 확인 전이라도 이어서
+//   쓴다(연달아 누르기, core.mjs safeHead). 내용이 아니라 커밋으로 믿으므로, 같은 내용으로 되돌린(revert) 남의 push 는 믿지 않는다.
 // - 봇이 꺼져 있는 동안 누른 버튼은 텔레그램이 24시간 보관했다가 봇이 켜지면 처리된다(수락·거절은 그때 바로 저장).
 // - 저장은 이 컴퓨터의 gh 계정(저장소 관리자이거나 관리자 팀원)으로 하고, 권한은 누른 팀원의 역할로 본다.
 // - 같은 봇은 한 컴퓨터에서만 켠다. 토큰·chat id 는 출력하지 않는다.
@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import {
   NOTE_DIR, loadMembers, readEnv, telegramApi, validateDb, validateMembers, esc, BOT_NAME, menuKeyboard, menuText, missionsText,
   ownersFromEnv, decide, confirmText, resolveRefs, boardText, boardKeyboard, teamText, sentText, decideCallback, composePrompt,
-  requestNotice, respondNotice, respondRequest, ACTIONS, resultText, trustedHead,
+  requestNotice, respondNotice, respondRequest, ACTIONS, resultText, safeHead,
 } from './lib.mjs';
 import { processUpdates, applyLink, loadCodes, secretNames } from './telegram.mjs';
 import { mutate } from './mission.mjs';
@@ -42,6 +42,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 export function botRunningHere() {
   try { const { pid } = JSON.parse(fs.readFileSync(LOCK(), 'utf8')); return pid !== process.pid && alive(pid); } catch { return false; }
+}
+const TRUSTED = () => path.join(HOME_DIR(), 'core-bot-trusted.json');
+export function loadTrusted(file = TRUSTED()) {
+  try { return new Map(JSON.parse(fs.readFileSync(file, 'utf8')).commits.filter((x) => /^[0-9a-f]{40}$/.test(x?.[0]))); } catch { return new Map(); }
+}
+export function saveTrusted(map, file = TRUSTED()) {
+  while (map.size > 500) map.delete(map.keys().next().value);
+  try { fs.writeFileSync(file, JSON.stringify({ commits: [...map] })); } catch (e) { console.log(`봇 커밋 기록 저장 실패: ${e.message}`); }
 }
 // 누른 버튼의 미션만 메시지에서 뺀다(처리한 요청 버튼이 남아 다시 눌리지 않게)
 export const withoutMission = (markup, missionId) => ({
@@ -74,7 +82,8 @@ async function main() {
   const memo = new Map();
   let verified = { sha: null, at: 0 };
   const verifiedSha = () => {
-    if (Date.now() - verified.at > 60e3) verified = { sha: github.verifiedSha(), at: Date.now() };
+    // 못 찾으면(실행이 연달아 취소된 직후 등) 마지막으로 알아낸 확인된 커밋을 계속 쓴다 — 예전 것이어도 확인된 상태다
+    if (Date.now() - verified.at > 60e3) verified = { sha: github.verifiedSha() || verified.sha, at: Date.now() };
     if (!verified.sha) throw new Error('GitHub Actions 의 확인 상태를 아직 알 수 없어요');
     return verified.sha;
   };
@@ -87,15 +96,15 @@ async function main() {
     }
     return memo.get(k);
   };
-  const trusted = new Map(); // 이 봇이 이번 실행에서 만든 커밋 → 그 부모(core.mjs trustedHead)
-  const blobs = { readFile: (f, ref) => ({ sha: read(f, ref).sha }) };
+  // 이 봇이 만든 커밋 → 그 부모(core.mjs safeHead). 다시 켜도 이어지게 이 컴퓨터에만 저장한다(최근 500개).
+  const trusted = loadTrusted();
   const state = async () => {
     let sha = verifiedSha();
     if (trusted.size) {
-      // main 이 봇이 방금 만든 커밋이면 그걸 보여 준다(연달아 누르기). 확인이 안 되거나 오류면 확인된 상태로.
+      // 확인된 커밋 위에 봇 커밋(+데이터를 안 바꾼 커밋)만 있으면 main 을 보여 준다(연달아 누르기). 아니거나 오류면 확인된 상태로.
       try {
         const h = github.headSha();
-        if (h !== sha && await trustedHead(blobs, h, trusted, sha)) sha = h;
+        if (h !== sha && await safeHead(github, h, sha, trusted)) sha = h;
       } catch { /* 확인된 상태로 */ }
     }
     const members = read(MEMBERS_FILE, sha).json.members;
@@ -107,7 +116,7 @@ async function main() {
     const w = await mutate(github, apply, describe, { as, via: '텔레그램', trusted });
     if (w.commit) {
       trusted.set(w.commit, w.parent);
-      if (trusted.size > 50) trusted.delete(trusted.keys().next().value);
+      saveTrusted(trusted);
     }
     verified.at = 0; // 다음 버튼은 새 확인 상태를 보게
     return w;

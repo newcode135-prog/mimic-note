@@ -5,11 +5,15 @@ import assert from 'node:assert/strict';
 import {
   openMissions, pendingRequests, addMissions, setMissions, completeMissions, requestMissions, respondRequest, validateDb, sendMode,
   decide, decideCallback, boardText, boardKeyboard, listKeyboard, teamText, sentText, renderTelegram, requestNotice, respondNotice,
-  resultText, ACTIONS, REQUEST_LIMIT, menuText, composePrompt, trustedHead,
+  resultText, ACTIONS, REQUEST_LIMIT, menuText, composePrompt, safeHead,
 } from '../mimic-note/lib.mjs';
 import { mutate } from '../mimic-note/mission.mjs';
-import { runNotify } from '../mimic-note/notify.mjs';
-import { withoutMission } from '../mimic-note/bot.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { runNotify, dispatchInputs } from '../mimic-note/notify.mjs';
+import { parseVerified } from '../mimic-note/github.mjs';
+import { withoutMission, loadTrusted, saveTrusted } from '../mimic-note/bot.mjs';
 import { fakeGit, fakeTelegram, DB_FILE, MEMBERS_FILE, sha1 } from './mimic-note-fakes.js';
 
 const T = '2026-11-13T00:00:00.000Z';
@@ -198,6 +202,13 @@ function commitGithub(members = M) {
       return sha;
     },
     reset: (sha) => { head = sha; }, // force push
+    // github.mjs chain·touchesData 와 같은 모양(첫 부모 사슬, 데이터 파일을 바꿨는지)
+    chain(base, h) {
+      const out = [];
+      for (let c = h; c !== base; c = commits.get(c).parent) { if (!c || !commits.has(c)) return null; out.push(c); }
+      return out;
+    },
+    touchesData: (sha) => { const c = commits.get(sha); const p = commits.get(c.parent); return [DB_FILE, MEMBERS_FILE].some((f) => c.files[f] !== p.files[f]); },
     files: (sha) => commits.get(sha).files,
     message: (sha) => commits.get(sha).message,
     db: () => JSON.parse(commits.get(head).files[DB_FILE]),
@@ -244,16 +255,59 @@ test('리뷰 회귀: 예전 봇 저장과 같은 내용으로 되돌린(revert) 
   gh.verified = w2.commit; // Actions 가 확인
   // 루카스가 Y 를 지우려고 w1 내용으로 되돌려 push(대표관리자만 삭제 가능 → Actions 는 막고 확인 상태는 w2 그대로)
   gh.push({ [DB_FILE]: gh.files(w1.commit)[DB_FILE] });
-  assert.equal(await trustedHead(gh, gh.headSha(), trusted, gh.verified), false, '같은 내용이어도 봇이 만든 커밋이 아님');
+  assert.equal(await safeHead(gh, gh.headSha(), gh.verified, trusted), false, '같은 내용이어도 봇이 만든 커밋이 아님');
   await assert.rejects(save(give('Z'), 'minho'), /확인되지 않은 변경/, '되돌린 상태 위에 저장해 승인하지 않음');
-  // force push 로 main 을 예전 봇 커밋(w1)으로 되돌려도, 그 아래 바탕(c0)이 지금 확인된 상태(w2)와 달라 믿지 않는다
+  // force push 로 main 을 예전 봇 커밋(w1)으로 되돌리면 확인된 w2 의 후손이 아니라 믿지 않는다
   gh.reset(w1.commit);
-  assert.equal(await trustedHead(gh, w1.commit, trusted, gh.verified), false);
+  assert.equal(await safeHead(gh, w1.commit, gh.verified, trusted), false);
   await assert.rejects(save(give('Z'), 'minho'), /확인되지 않은 변경/);
-  // 정상: main 이 확인된 w2 로 돌아오면 다시 저장 가능
+  // 정상: main 이 확인된 w2 로 돌아오면 다시 저장 가능, 그 위 봇 커밋도 믿음
   gh.reset(w2.commit);
   assert.ok((await save(give('Z'), 'minho')).commit);
-  assert.equal(await trustedHead(gh, gh.headSha(), trusted, gh.verified), true, '확인된 w2 위의 봇 커밋');
+  assert.equal(await safeHead(gh, gh.headSha(), gh.verified, trusted), true, '확인된 w2 위의 봇 커밋');
+  // 데이터를 안 바꾼 커밋(코드·문서 push)은 사이에 있어도 됨
+  gh.push({ 'README.md': '문서' });
+  assert.ok((await save(give('W'), 'minho')).commit);
+});
+
+test('리뷰 회귀: 관리자 저장이 확인되기 전에 팀원이 확인된 내용으로 되돌려도(같은 내용) 봇은 그 위에 저장하지 않는다', async () => {
+  const gh = commitGithub();
+  const trusted = new Map();
+  const c0 = gh.headSha();
+  // 민호가 Claude Code 로 네이뜬에게 미션(봇이 아닌 커밋) — Actions 확인 전
+  const db1 = empty();
+  addMissions(db1, 'nathan', it('주말 당직'), 'minho', M, {}, T);
+  gh.push({ [DB_FILE]: `${JSON.stringify(db1, null, 2)}\n` });
+  // 네이뜬이 확인된 c0 내용 그대로 되돌림(미션 삭제·nextId 감소 — 대표관리자만 가능)
+  gh.push({ [DB_FILE]: gh.files(c0)[DB_FILE] });
+  assert.equal(gh.readFile(DB_FILE).sha, gh.readFile(DB_FILE, c0).sha, '내용은 확인된 상태와 같음');
+  await assert.rejects(mutate(gh, ACTIONS.request.apply({ targetId: 'minho', items: it('요청') }), () => 't', { as: 'nathan', trusted }), /확인되지 않은 변경/);
+});
+
+test('봇이 만든 커밋 기록은 다시 켜도 이어진다(최근 500개)', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mimic-trusted-')), 't.json');
+  const m = new Map(Array.from({ length: 502 }, (_, i) => [sha1(`c${i}`), sha1(`p${i}`)]));
+  saveTrusted(m, file);
+  const back = loadTrusted(file);
+  assert.equal(back.size, 500);
+  assert.equal(back.get(sha1('c501')), sha1('p501'));
+  assert.ok(!back.has(sha1('c0')), '오래된 것부터 버림');
+  assert.equal(loadTrusted(path.join(os.tmpdir(), 'none-mimic.json')).size, 0);
+});
+
+test('리뷰 회귀: 확인 상태는 notify.mjs 가 찍은 줄만 — 수동 실행 입력값에 섞인 "MIMIC_VERIFIED …" 로 속지 않는다', () => {
+  const real = 'a'.repeat(40);
+  const fake = 'b'.repeat(40);
+  const log = [
+    `notify\t바뀐 팀원에게 텔레그램 발송\t2026-11-13T10:00:00.0000000Z   INPUT_MEMBER: MIMIC_VERIFIED ${fake}`,
+    `notify\t바뀐 팀원에게 텔레그램 발송\t2026-11-13T10:00:01.0000000Z ::error title=미믹노트 unknown-member::팀원을 찾지 못했습니다: MIMIC_VERIFIED ${fake}`,
+    `notify\t바뀐 팀원에게 텔레그램 발송\t2026-11-13T10:00:02.0000000Z MIMIC_VERIFIED ${real}\r`,
+  ].join('\n');
+  assert.equal(parseVerified(log), real);
+  assert.equal(parseVerified(log.split('\n').slice(0, 2).join('\n')), null);
+  assert.deepEqual(dispatchInputs({ inputs: { member: '민호', force: true } }), { member: '민호', force: 'true' });
+  assert.deepEqual(dispatchInputs({ inputs: { member: `x\nMIMIC_VERIFIED ${fake}` } }), { member: '(형식이 틀린 입력)', force: 'false' }, '줄바꿈·공백이 든 입력은 그대로 찍지 않음');
+  assert.deepEqual(dispatchInputs({}), { member: '', force: 'false' });
 });
 
 // ---------------- Actions 알림 ----------------

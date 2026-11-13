@@ -347,10 +347,26 @@ function makeGh(env) {
   };
 }
 
+// 수동 실행 입력값은 이벤트 파일에서 읽는다 — 워크플로 env 로 넘기면 실행 로그에 그대로 찍혀, 봇이 읽는 MIMIC_VERIFIED 줄을
+// 흉내 낼 수 있다(github.mjs verifiedSha). 팀원 이름·아이디 모양(글자·숫자·_·-, 40자 이하)만 받는다.
+export function dispatchInputs(event) {
+  const raw = String(event?.inputs?.member ?? '').trim();
+  return { member: !raw ? '' : /^[\p{L}\p{N}_-]{1,40}$/u.test(raw) ? raw : '(형식이 틀린 입력)', force: String(event?.inputs?.force) === 'true' ? 'true' : 'false' };
+}
+
 const LABEL = { sent: '발송 성공', 'already-sent': '같은 내용 이미 보냄', unconnected: '미연결', unconfigured: '봇 토큰 미설정', failed: '실패', alert: '대표관리자 경고' };
 
 async function main() {
-  const env = process.env;
+  const env = { ...process.env };
+  delete env.INPUT_MEMBER;
+  delete env.INPUT_FORCE;
+  if (env.EVENT_NAME === 'workflow_dispatch' && env.GITHUB_EVENT_PATH) {
+    try {
+      const i = dispatchInputs(JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8')));
+      env.INPUT_MEMBER = i.member;
+      env.INPUT_FORCE = i.force;
+    } catch (e) { console.log(`::warning title=미믹노트::수동 실행 입력값을 못 읽음(${e.message})`); }
+  }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const ledgerFile = path.join(root, '.mimic-note-ledger', 'ledger.json');
   const git = makeGit(root);

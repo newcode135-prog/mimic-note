@@ -434,10 +434,15 @@ export function menuKeyboard(members) {
   return { keyboard, resize_keyboard: true, is_persistent: true };
 }
 
-export function menuText(owner, members = []) {
+// app: false 는 버튼(✅·📨·수락/거절)이 없는 봇 서버(워커)용 — 글 명령만 안내한다
+export function menuText(owner, members = [], { app = true } = {}) {
   if (!owner) return ['🎯 <b>코어 오브 미믹노트</b>', '', '아래에서 본인 이름 버튼을 누르세요. 처음이면 관리자에게 받은 <b>본인 연결 링크</b>로 [시작]을 먼저 눌러 주세요.'].join('\n');
   const n = esc(owner.name);
   const admin = ADMIN_ROLES.has(owner.role);
+  if (!app) {
+    return ['🎯 <b>코어 오브 미믹노트</b>', '', `${n}님, 아래 <b>${n}봇</b>을 누르면 지금 보고할 미션이 와요(다른 이름봇은 그 사람 미션).`, `끝내면 <code>${n} 미션완료 1</code> 처럼 보내세요.`,
+      ...(admin ? ['', '미션 주기: <code>창민 이거 결제해줘</code> · 바꾸기: <code>창민 미션설정</code> + 줄마다 <code>1. …</code>'] : [])].join('\n');
+  }
   return ['🎯 <b>코어 오브 미믹노트</b>', '', `${n}님, 이렇게 써요`,
     `• <b>${n}봇</b> → 내 미션 · <b>✅</b> 버튼으로 완료${admin ? ' · 받은 요청 수락/거절' : ''}`,
     admin ? '• 다른 사람 이름봇 → 그 사람 미션 보기 · <b>📨 미션 주기</b>' : `• 다른 사람 이름봇 → 그 사람 미션 보기 · 관리자(${esc(adminNames(members))})에게는 <b>📨 미션 요청</b>(수락하면 미션이 돼요)`,
@@ -696,21 +701,21 @@ export function resolveRefs(db, memberId, refs) {
   });
 }
 
-// head 가 봇이 이번 실행에서 만든 커밋이면: 봇 커밋들을 부모로 걷어 내려가 처음 바탕이 된 커밋이 확인된 상태(verified)와 같은 내용인지.
-// 봇은 확인된 내용 위에서만, main 을 빨리감기로만 저장하므로 그 위의 봇 커밋도 확인된 것과 같다.
-// 내용이 아니라 커밋으로 믿는다 — 누가 예전 봇 저장과 같은 내용으로 되돌려(revert) push 해도 새 커밋이라 믿지 않는다.
-export async function trustedHead(github, head, trusted, verified) {
-  if (!trusted?.has(head)) return false;
-  let base = head;
-  for (let n = 0; base !== verified && trusted.has(base) && n < 100; n++) base = trusted.get(base);
-  if (base === verified) return true;
-  for (const f of [MEMBERS_FILE, DB_FILE]) if ((await github.readFile(f, base)).sha !== (await github.readFile(f, verified)).sha) return false;
+// 봇이 head 위에 저장(또는 head 를 보여 줌)해도 되는지: head 가 Actions 가 확인한 커밋이거나, 확인된 커밋에서 head 까지의
+// main 첫 부모 사슬이 ① 봇이 직접 만든 커밋(trusted: Map 커밋 → 부모) ② 미션 데이터를 안 바꾼 커밋(코드·문서)으로만 이어질 때.
+// 내용이 아니라 커밋으로 판단한다 — 확인 전의 변경을 누가 되돌려(revert) 예전과 같은 내용이 돼도, 그 push 는 데이터를 바꾼
+// 남의 커밋이라 믿지 않는다. head 가 확인된 커밋의 후손이 아니면(force push) 믿지 않는다.
+export async function safeHead(github, head, verified, trusted = null) {
+  if (head === verified) return true;
+  const chain = await github.chain(verified, head);
+  if (!chain) return false;
+  for (const c of chain) if (!trusted?.has(c) && await github.touchesData(c)) return false;
   return true;
 }
 
 // GitHub main 의 최신 미션 DB 에 apply 를 적용해 저장한다. 충돌(그사이 누가 바꿈)이면 최신본으로 다시(최대 3번).
 // as: 코어 오브 미믹노트 봇이 텔레그램 연결(일회용 코드)로 확인한 팀원 아이디 — 이때는 gh 계정은 저장만 하고, 권한은 그 팀원 역할로 본다.
-// trusted: 봇이 이번 실행에서 직접 만든 커밋(Map 커밋 → 부모) — main 이 그 커밋이면 Actions 확인 전이라도 이어서 저장한다(trustedHead).
+// trusted: 봇이 직접 만든 커밋(Map 커밋 → 부모) — 그 커밋들은 Actions 확인 전이라도 이어서 저장한다(safeHead).
 export async function mutate(github, apply, describe, { as = null, via = null, trusted = null } = {}) {
   const login = await github.whoami();
   const access = await github.access();
@@ -732,8 +737,9 @@ export async function mutate(github, apply, describe, { as = null, via = null, t
       if (!access.admin && !ADMIN_ROLES.has(saver?.role)) throw new Error(`봇이 저장에 쓰는 GitHub 계정(${login})은 저장소 관리자이거나 관리자 팀원이어야 합니다.`);
       const v = await github.verifiedSha();
       if (!v) throw new Error('GitHub Actions 의 확인 상태를 알 수 없어 저장을 멈췄어요. 잠시 뒤 다시 해 주세요.');
-      const ok = ((await github.readFile(MEMBERS_FILE, v)).sha === mf.sha && (await github.readFile(DB_FILE, v)).sha === sha)
-        || await trustedHead(github, head, trusted, v);
+      // 커밋 사슬을 볼 수 있는 어댑터(gh)는 safeHead, 못 보는 어댑터(워커)는 예전처럼 "확인된 상태와 같은 내용"
+      const ok = github.chain ? await safeHead(github, head, v, trusted)
+        : (await github.readFile(MEMBERS_FILE, v)).sha === mf.sha && (await github.readFile(DB_FILE, v)).sha === sha;
       if (!ok) throw new Error('main 에 아직 확인되지 않은 변경이 있어 저장을 멈췄어요(다른 곳에서 방금 저장한 내용을 처리 중이거나 관리자 확인이 필요). 1분쯤 뒤 다시 해 주세요.');
     }
     const actor = as ? members.find((m) => m.id === as) || null : memberByGithub(login, members);

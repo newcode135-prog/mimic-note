@@ -61,8 +61,8 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           AFTER_SHA: ${{ github.sha }}
           ACTOR: ${{ github.actor }}
-          INPUT_MEMBER: ${{ inputs.member }}
-          INPUT_FORCE: ${{ inputs.force }}
+          # 수동 실행 입력값(member·force)은 env 로 넘기지 않는다 — 실행 로그에 그대로 찍혀 MIMIC_VERIFIED 줄을 흉내 낼 수 있음.
+          # notify.mjs 가 이벤트 파일(GITHUB_EVENT_PATH)에서 읽고 형식을 검사한다.
           NOTE_RELAY_URL: ${{ secrets.NOTE_RELAY_URL }}
           NOTE_RELAY_SECRET: ${{ secrets.NOTE_RELAY_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
