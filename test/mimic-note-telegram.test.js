@@ -10,7 +10,7 @@ import {
   setLowPriority, validateDb, validateMembers, telegramApi,
 } from '../mimic-note/lib.mjs';
 import { run } from '../mimic-note/mission.mjs';
-import { renderTelegram, verifyChange, runNotify, hashText } from '../mimic-note/notify.mjs';
+import { renderTelegram, renderDoneNotice, verifyChange, runNotify, hashText } from '../mimic-note/notify.mjs';
 import { processUpdates, setEnvVar, makeCode, secretName } from '../mimic-note/telegram.mjs';
 import { waitForNotify, parseResults, formatNotify } from '../mimic-note/github.mjs';
 import { telegramViaActions } from '../mimic-note/checkin.mjs';
@@ -776,4 +776,82 @@ test('실제 텔레그램 sendMessage 응답 확인 (MIMIC_TELEGRAM_TEST_TOKEN·
   const r = await telegramApi(process.env.MIMIC_TELEGRAM_TEST_TOKEN, 'sendMessage', { chat_id: process.env.MIMIC_TELEGRAM_TEST_CHAT_ID, text: renderTelegram(M[1], db), parse_mode: 'HTML' });
   assert.ok(r.message_id);
   assert.equal(String(r.chat.id), String(process.env.MIMIC_TELEGRAM_TEST_CHAT_ID));
+});
+
+// ---------------- 완료 알림 ----------------
+
+const rows = (r) => r.results.map((x) => [x.member, x.kind || 'list', x.status]);
+
+test('완료 알림: 담당자에게 "✅ 방금 완료" + 미션을 준 사람에게 완료 알림, 중복 판단은 상태 기준', async () => {
+  const { git, c0, c1, runs, db1 } = minhoSetup(); // 창민이 준 민호 미션 3개
+  const tg = fakeTelegram();
+  const ledger = newLedger(c0);
+  await runNotify({ env: pushEnv(git, c0, c1, 'darrenpual'), git, gh: ghOf(runs), send: tg.send, ledger, now: () => T });
+  const db2 = clone(db1);
+  completeMissions(db2, 'minho', ['2'], { by: 'minho', members: M }, T);
+  const c2 = git.add(files(db2));
+  const r = await runNotify({ env: pushEnv(git, c1, c2, 'newcode135-prog'), git, gh: ghOf({ ...runs, [c2]: 'newcode135-prog' }), send: tg.send, ledger, now: () => T });
+  assert.deepEqual(rows(r), [['minho', 'list', 'sent'], ['changmin', 'done-notice', 'sent']]);
+  const [toMinho, toChangmin] = tg.sent.slice(-2);
+  assert.equal(toMinho.chatId, '1002');
+  assert.match(toMinho.text, /^🎯 <b>MIMIC NOTE<\/b>\n\n✅ 방금 완료: 파일 다운로드 API 테스트\n\n👤 <b>민호님의 미션<\/b>/);
+  assert.match(toMinho.text, /📊 진행률 1\/3\n📌 남은 미션 2개$/);
+  assert.equal(toChangmin.chatId, '1001');
+  assert.equal(toChangmin.text, renderDoneNotice(M[1], ['파일 다운로드 API 테스트'], db2));
+  assert.match(toChangmin.text, /민호님이 미션을 완료했어요\n• 파일 다운로드 API 테스트\n\n📊 민호님 진행률 1\/3 · 남은 미션 2개/);
+  const checkin = await runNotify({ env: { ...ENV, EVENT_NAME: 'workflow_dispatch', INPUT_MEMBER: 'minho' }, git, gh: ghOf({}), send: tg.send, ledger, now: () => T });
+  assert.deepEqual(rows(checkin), [['minho', 'list', 'already-sent']], '방금 완료 줄 때문에 같은 목록을 다시 보내지 않는다');
+  const rerun = await runNotify({ env: { ...ENV, EVENT_NAME: 'schedule' }, git, gh: ghOf({}), send: tg.send, ledger, now: () => T });
+  assert.deepEqual(rerun.results, [], '완료 알림도 한 번만');
+  assert.match(formatNotify({ status: 'done', run: { conclusion: 'success', html_url: 'u' }, results: r.results, problems: [] }, M), /창민\(완료 알림 — 민호님\): ✅ 발송 성공/);
+});
+
+test('완료 알림: 스스로 만든 미션은 준 사람 알림 없음, 미션을 준 사람이 미연결이면 표시만 하고 버림', async () => {
+  const db0 = empty();
+  const git = fakeGit([files(db0)]);
+  const c0 = git.head();
+  const db1 = clone(db0);
+  setMissions(db1, '민호', list3, 'minho', M, T);
+  const c1 = git.add(files(db1));
+  const db2 = clone(db1);
+  completeMissions(db2, 'minho', ['1'], { by: 'minho', members: M }, T);
+  const c2 = git.add(files(db2));
+  const tg = fakeTelegram();
+  const r = await runNotify({ env: pushEnv(git, c1, c2, 'newcode135-prog'), git, gh: ghOf({ [c1]: 'newcode135-prog', [c2]: 'newcode135-prog' }), send: tg.send, ledger: newLedger(c0), now: () => T });
+  assert.deepEqual(rows(r), [['minho', 'list', 'sent']]);
+  assert.match(tg.sent[0].text, /✅ 방금 완료: 로그인 UI 개발/);
+
+  const s = minhoSetup();
+  const { TELEGRAM_CHAT_ID_CHANGMIN, ...noOwner } = ENV;
+  const ledger = newLedger(s.c0);
+  const tg2 = fakeTelegram();
+  await runNotify({ env: { ...noOwner, EVENT_NAME: 'push', BEFORE_SHA: s.c0, AFTER_SHA: s.c1, ACTOR: 'darrenpual' }, git: s.git, gh: ghOf(s.runs), send: tg2.send, ledger, now: () => T });
+  const e2 = clone(s.db1);
+  completeMissions(e2, 'minho', ['1'], { by: 'minho', members: M }, T);
+  const d2 = s.git.add(files(e2));
+  const r2 = await runNotify({ env: { ...noOwner, EVENT_NAME: 'push', BEFORE_SHA: s.c1, AFTER_SHA: d2, ACTOR: 'newcode135-prog' }, git: s.git, gh: ghOf({ ...s.runs, [d2]: 'newcode135-prog' }), send: tg2.send, ledger, now: () => T });
+  assert.deepEqual(rows(r2), [['minho', 'list', 'sent'], ['changmin', 'done-notice', 'unconnected']]);
+  assert.deepEqual(ledger.notices, []);
+});
+
+test('완료 알림: 발송이 실패하면 남겨 두었다가 다음 실행에서 다시, 미연결 담당자는 연결 뒤 "방금 완료" 와 함께', async () => {
+  const { git, c0, c1, runs, db1 } = minhoSetup();
+  const ledger = newLedger(c0);
+  const { TELEGRAM_CHAT_ID_MINHO, ...noMinho } = ENV;
+  const down = Object.assign(new Error('텔레그램 sendMessage 실패: Internal Server Error'), { code: 500 });
+  const flaky = fakeTelegram({ fail: { 1001: down } });
+  await runNotify({ env: { ...noMinho, EVENT_NAME: 'push', BEFORE_SHA: c0, AFTER_SHA: c1, ACTOR: 'darrenpual' }, git, gh: ghOf(runs), send: flaky.send, ledger, now: () => T });
+  const db2 = clone(db1);
+  completeMissions(db2, 'minho', ['3'], { by: 'minho', members: M }, T);
+  const c2 = git.add(files(db2));
+  const r = await runNotify({ env: { ...noMinho, EVENT_NAME: 'push', BEFORE_SHA: c1, AFTER_SHA: c2, ACTOR: 'newcode135-prog' }, git, gh: ghOf({ ...runs, [c2]: 'newcode135-prog' }), send: flaky.send, ledger, now: () => T });
+  assert.deepEqual(rows(r), [['minho', 'list', 'unconnected'], ['changmin', 'done-notice', 'failed']]);
+  assert.equal(ledger.notices.length, 1);
+  assert.deepEqual(ledger.members.minho.justDone, ['모바일 화면 검수']);
+  const ok = fakeTelegram();
+  const later = await runNotify({ env: { ...ENV, EVENT_NAME: 'schedule' }, git, gh: ghOf({}), send: ok.send, ledger, now: () => T });
+  assert.deepEqual(rows(later), [['minho', 'list', 'sent'], ['changmin', 'done-notice', 'sent']]);
+  assert.match(ok.sent[0].text, /✅ 방금 완료: 모바일 화면 검수/);
+  assert.deepEqual(ledger.notices, []);
+  assert.equal(ledger.members.minho.justDone, undefined);
 });

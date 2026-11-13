@@ -136,7 +136,7 @@ export function formatNotify(r, members = []) {
   const lines = [`📨 텔레그램 알림 (GitHub Actions: ${r.run.conclusion === 'success' ? '성공' : r.run.conclusion})${r.coveredElsewhere ? ' — 이 변경을 처리한 실행' : ''}`];
   if (r.logError) lines.push(`  • 결과 로그를 읽지 못했습니다(${r.logError}) — 아래 실행 기록에서 확인하세요`);
   else if (!r.results.length && !r.problems.length) lines.push('  • 보낼 대상 없음(바뀐 팀원·보류된 알림 없음)');
-  for (const x of r.results) lines.push(`  • ${name(x.member)}: ${LABEL[x.status] || x.status}${x.error ? ` — ${x.error}` : ''}`);
+  for (const x of r.results) lines.push(`  • ${name(x.member)}${x.kind === 'done-notice' ? `(완료 알림 — ${name(x.about)}님)` : ''}: ${LABEL[x.status] || x.status}${x.error ? ` — ${x.error}` : ''}`);
   for (const p of r.problems) lines.push(`  • ${KIND[p.kind] || p.kind}${p.known ? '(아직 해결 안 됨)' : ''}: ${(p.detail || []).join(' / ')}`);
   lines.push(`  실행 기록: ${r.run.html_url}`);
   return lines.join('\n');

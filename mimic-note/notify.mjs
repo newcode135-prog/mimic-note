@@ -29,11 +29,13 @@ const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const num = (i) => KEYCAPS[i] || `${i + 1}.`;
 
 // 팀원 한 명의 텔레그램 메시지(HTML). 상위 3개는 크게, 설명과 4번부터는 눌러서 펼치기.
-// 제목·순서·진행률은 모두 DB 에서 계산한다.
-export function renderTelegram(member, db) {
+// 제목·순서·진행률은 모두 DB 에서 계산한다. justDone: 이번 변경에서 끝낸 미션 제목(맨 위에 "✅ 방금 완료").
+export function renderTelegram(member, db, { justDone = [] } = {}) {
   const open = openMissions(db, member.id);
   const done = doneMissions(db, member.id).length;
-  const lines = ['🎯 <b>MIMIC NOTE</b>', '', `👤 <b>${esc(member.name)}님의 미션</b>`, ''];
+  const lines = ['🎯 <b>MIMIC NOTE</b>', ''];
+  if (justDone.length) lines.push(...justDone.slice(0, 5).map((t) => `✅ 방금 완료: ${esc(clip(t, 120))}`), '');
+  lines.push(`👤 <b>${esc(member.name)}님의 미션</b>`, '');
   if (!open.length) lines.push('🎉 남은 미션이 없어요!', '');
   open.slice(0, 3).forEach((m, i) => {
     lines.push(`${num(i)} ${esc(clip(m.title, 200))}${m.priority === 'low' ? ' <i>(후순위)</i>' : ''}`);
@@ -48,6 +50,14 @@ export function renderTelegram(member, db) {
   }
   lines.push('━━━━━━━━━━', '', `📊 진행률 ${done}/${open.length + done}`, `📌 남은 미션 ${open.length}개`);
   return lines.join('\n');
+}
+
+// 미션을 준 사람(createdBy)에게 가는 완료 알림. 진행률은 보내는 시점의 확인된 상태 기준.
+export function renderDoneNotice(assignee, titles, db) {
+  const open = openMissions(db, assignee.id).length;
+  const done = doneMissions(db, assignee.id).length;
+  return ['✅ <b>MIMIC NOTE 완료 알림</b>', '', `👤 ${esc(assignee.name)}님이 미션을 완료했어요`, ...titles.slice(0, 10).map((t) => `• ${esc(clip(t, 120))}`), '',
+    `📊 ${esc(assignee.name)}님 진행률 ${done}/${open + done} · 남은 미션 ${open}개`].join('\n');
 }
 
 export const hashText = (t) => crypto.createHash('sha256').update(t).digest('hex').slice(0, 16);
@@ -98,9 +108,9 @@ const schemaErrors = (s) => (s.error ? [s.error] : [...validateMembers(s.members
 export function loadLedger(file) {
   try {
     const l = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return { verifiedSha: l.verifiedSha || null, owner: l.owner || null, members: l.members || {}, alerts: l.alerts || [], flagged: l.flagged || [] };
+    return { verifiedSha: l.verifiedSha || null, owner: l.owner || null, members: l.members || {}, alerts: l.alerts || [], flagged: l.flagged || [], notices: l.notices || [] };
   } catch {
-    return { verifiedSha: null, owner: null, members: {}, alerts: [], flagged: [] };
+    return { verifiedSha: null, owner: null, members: {}, alerts: [], flagged: [], notices: [] };
   }
 }
 
@@ -111,6 +121,7 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
   const problems = [];
   const covered = [];
   const candidates = new Set();
+  const completed = []; // 확인된 변경에서 todo → done 이 된 미션
   const head = git.head();
   const event = env.EVENT_NAME || 'workflow_dispatch';
   const owner = (env.GITHUB_REPOSITORY_OWNER || '').toLowerCase();
@@ -166,6 +177,8 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
       const v = verifyChange({ base, head: next, actor, repoAdmin: await isRepoAdmin(actor) });
       if (v.length) { report({ kind: 'unauthorized', sha: c, actor, detail: v }); continue; }
       changedMembers(base.db, next.db, next.members).forEach((id) => candidates.add(id));
+      const was = new Map(base.db.missions.map((m) => [m.id, m]));
+      for (const m of next.db.missions) if (was.get(m.id)?.status === 'todo' && m.status === 'done') completed.push(m);
       verified = c;
       base = next;
     }
@@ -188,6 +201,20 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
     }
   }
 
+  const justDone = new Map();
+  for (const m of completed) justDone.set(m.assignee, [...(justDone.get(m.assignee) || []), m.title]);
+  const fresh = new Map();
+  for (const m of completed) {
+    const to = cur.members.find((x) => x.id === m.createdBy);
+    if (!to || to.id === (m.doneBy || m.assignee)) continue; // 스스로 만든·스스로 끝낸 미션은 알림 없음
+    const k = `${to.id}:${m.assignee}`;
+    const n = fresh.get(k) || { to: to.id, assignee: m.assignee, titles: [], keys: [] };
+    n.titles.push(m.title);
+    n.keys.push(`${m.id}@${m.doneAt}`);
+    fresh.set(k, n);
+  }
+  const notices = [...(ledger.notices || []), ...fresh.values()];
+
   // 3) 발송
   const token = env.TELEGRAM_BOT_TOKEN;
   if (!halted && !curBad.length) {
@@ -195,16 +222,21 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
       const member = cur.members.find((m) => m.id === id);
       if (!member) { delete ledger.members[id]; continue; }
       const st = (ledger.members[id] ||= {});
-      const text = renderTelegram(member, cur.db);
-      const hash = hashText(text);
+      // 중복 판단은 "상태"만으로(방금 완료 줄은 빼고) — 나중 체크인이 같은 목록을 다시 보내지 않게
+      const plain = renderTelegram(member, cur.db);
+      const hash = hashText(plain);
+      const jd = [...new Set([...(st.justDone || []), ...(justDone.get(id) || [])])].slice(-5);
+      const text = jd.length ? renderTelegram(member, cur.db, { justDone: jd }) : plain;
       if (st.sentHash === hash && forced !== id) {
         st.pending = false;
+        delete st.justDone;
         results.push({ member: id, status: 'already-sent' });
         continue;
       }
       const chatId = chatIdFor(id, env);
       if (!token || !chatId) {
         st.pending = true;
+        if (jd.length) st.justDone = jd;
         results.push({ member: id, status: token ? 'unconnected' : 'unconfigured' });
         continue;
       }
@@ -212,13 +244,38 @@ export async function runNotify({ env, git, gh, send, ledger, now = () => new Da
         const r = await send(token, chatId, text);
         if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
         Object.assign(st, { sentHash: hash, sentAt: now(), messageId: r.message_id, pending: false, lastError: null });
+        delete st.justDone;
         results.push({ member: id, status: 'sent', messageId: r.message_id });
       } catch (e) {
         Object.assign(st, { pending: true, lastError: String(e.message).slice(0, 200) });
+        if (jd.length) st.justDone = jd;
         results.push({ member: id, status: 'failed', error: String(e.message).slice(0, 200), code: e.code ?? null });
       }
     }
   }
+
+  // 3-1) 미션을 준 사람에게 완료 알림. 미연결이면 버리고(전체미션으로 확인 가능), 발송 실패만 다음 실행에서 다시.
+  const keep = [];
+  if (halted || curBad.length) keep.push(...notices);
+  else {
+    for (const n of notices) {
+      const to = cur.members.find((x) => x.id === n.to);
+      const who = cur.members.find((x) => x.id === n.assignee);
+      if (!to || !who) continue;
+      const chatId = chatIdFor(to.id, env);
+      const base = { member: to.id, kind: 'done-notice', about: who.id };
+      if (!token || !chatId) { results.push({ ...base, status: token ? 'unconnected' : 'unconfigured' }); continue; }
+      try {
+        const r = await send(token, chatId, renderDoneNotice(who, n.titles, cur.db));
+        if (!r?.message_id || String(r.chat?.id) !== String(chatId)) throw new Error('sendMessage 응답이 올바르지 않음(message_id/chat 불일치)');
+        results.push({ ...base, status: 'sent', messageId: r.message_id });
+      } catch (e) {
+        keep.push({ ...n, tries: (n.tries || 0) + 1 });
+        results.push({ ...base, status: 'failed', error: String(e.message).slice(0, 200), code: e.code ?? null });
+      }
+    }
+  }
+  ledger.notices = keep.filter((n) => n.tries === undefined || n.tries < 20).slice(-50);
 
   // 4) 새 문제(권한 없음·깨진 데이터·기록 다시 쓰기) → 대표관리자에게 경고(같은 커밋은 한 번만)
   // 경고 받을 대표관리자는 확인된 명부 기준(멈춘 실행은 지난번에 확인된 대표관리자) — 다시 쓰인 명부를 믿지 않는다
