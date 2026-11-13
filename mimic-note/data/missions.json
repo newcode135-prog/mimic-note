@@ -370,10 +370,11 @@
       "order": 7,
       "title": "완료라고",
       "detail": "",
-      "status": "todo",
+      "status": "done",
       "createdBy": "minho",
       "createdAt": "2026-11-13T10:17:01.812Z",
-      "doneAt": null
+      "doneAt": "2026-11-13T12:20:48.281Z",
+      "doneBy": "yuri"
     },
     {
       "id": "M-0033",
