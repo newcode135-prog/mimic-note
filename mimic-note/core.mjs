@@ -161,18 +161,22 @@ export const normTitle = (s) => String(s || '').normalize('NFC').trim().replace(
 
 // "1. 제목" "2) 제목" "- 제목" "3번 제목" "1️⃣ 제목" 이 한 미션. 첫 미션보다 더 들여쓴 줄(하위 항목 포함)과
 // 번호 없는 줄은 바로 위 미션의 설명. "1.5배" 처럼 숫자가 이어지면 번호가 아니다.
-// 번호 붙은 줄이 하나도 없으면 줄마다 미션 하나. 첫 줄의 "민호 미션설정" 같은 머리줄만 버린다.
+// 번호 붙은 줄이 하나도 없으면 글 전체가 미션 하나(줄바꿈은 띄어쓰기로 이어 붙임 — 휴대폰에서 문장을 여러 줄로 보내도 한 미션).
+// 이어 붙여 200자가 넘으면 첫 줄이 제목, 나머지가 설명. 첫 줄의 "민호 미션설정" 같은 머리줄만 버린다.
 const ITEM_RE = /^(\s*)(?:\d{1,3}\s*[.)．](?!\d)|\d{1,3}\s*번[.:]?|\d️?⃣|🔟|[-*•·])\s*(\S.*)$/u;
 export function parseMissionList(text) {
   const lines = String(text || '').replace(/\r/g, '').split('\n').filter((l) => l.trim());
   if (lines.length && !ITEM_RE.test(lines[0]) && /^(\S+\s+)?미션\s*(설정|추가)$/.test(lines[0].trim())) lines.shift();
   const numbered = lines.some((l) => ITEM_RE.test(l));
   const items = [];
+  if (!numbered && lines.length) {
+    const all = lines.map((l) => l.trim()).join(' ');
+    items.push(all.length <= 200 ? { title: all, detail: '' } : { title: lines[0].trim(), detail: lines.slice(1).map((l) => l.trim()).join('\n') });
+  }
   let level = null;
-  for (const line of lines) {
+  for (const line of numbered ? lines : []) {
     const m = line.match(ITEM_RE);
-    if (!numbered) items.push({ title: line.trim(), detail: '' });
-    else if (m && (level === null || m[1].length <= level)) {
+    if (m && (level === null || m[1].length <= level)) {
       level ??= m[1].length;
       items.push({ title: m[2].trim(), detail: '' });
     } else if (items.length) items.at(-1).detail = [items.at(-1).detail, line.trim()].filter(Boolean).join('\n');
@@ -588,7 +592,7 @@ export function decideCallback(data, { viewer, members, db }) {
 // 미션 주기/요청 버튼을 누른 뒤 보내는 안내. 답장 강제(force_reply)는 쓰지 않는다 — 늘 떠 있는 이름 버튼판이 사라지므로.
 export function composePrompt(target, mode) {
   return [`📨 <b>${esc(target.name)}</b>님에게 ${mode === 'add' ? '줄 미션' : '요청할 미션'}을 이 대화에 적어 보내 주세요(10분 안).`, '',
-    '한 줄 = 미션 하나 · 설명은 <code>1. 제목</code> 다음 줄에 들여써서', '그만두려면 <code>취소</code>'].join('\n');
+    '보낸 글 전체가 미션 하나예요(여러 줄로 써도 하나).', '여러 개를 한 번에 보내려면 <code>1. 첫째</code> <code>2. 둘째</code> 처럼 번호를 붙여 주세요.', '그만두려면 <code>취소</code>'].join('\n');
 }
 
 // .env 의 TELEGRAM_CHAT_ID_<아이디> / TELEGRAM_CHAT_IDS 로 chat id → 팀원 아이디(GitHub 를 부르기 전에 알 수 있게)
