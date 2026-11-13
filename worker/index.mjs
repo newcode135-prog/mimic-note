@@ -172,6 +172,7 @@ async function onUpdate(u, env) {
     if (d.kind === 'team') return void (await send(replyTo, teamText(members, db)));
     if (d.kind === 'sent') return void (await send(replyTo, sentText(d.owner, members, db)));
     if (d.kind === 'act-denied') return void (await send(replyTo, d.text));
+    if (d.kind === 'lang-menu') return void (await send(replyTo, '언어 선택은 아직 봇 서버에서 지원하지 않아요(이 컴퓨터의 봇에서 🌐 언어).'));
     if (d.kind === 'act-error') return void (await send(replyTo, esc(d.error)));
     if (d.kind === 'act' && d.action === 'request') return void (await send(replyTo, '미션 요청은 아직 봇 서버에서 지원하지 않아요(수락·거절 버튼이 없음). 관리자에게 직접 말해 주세요.'));
     if (d.kind === 'act') {
