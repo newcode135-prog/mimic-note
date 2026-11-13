@@ -1,5 +1,5 @@
 {
-  "nextId": 19,
+  "nextId": 27,
   "missions": [
     {
       "id": "M-0001",
@@ -206,6 +206,102 @@
       "createdBy": "minho",
       "createdAt": "2026-11-13T05:52:07.980Z",
       "doneAt": null
+    },
+    {
+      "id": "M-0019",
+      "assignee": "lucas",
+      "order": 1,
+      "title": "Install Claude Code, Node 18+ and git — follow step 1 of mimic-note/guides/lucas-onboarding.md, then run `claude` and sign in.",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T06:30:35.825Z",
+      "doneAt": null,
+      "movedFrom": "newcode135-prog/mimic M-0016"
+    },
+    {
+      "id": "M-0020",
+      "assignee": "lucas",
+      "order": 2,
+      "title": "First login (check-in) — paste the prompt from step 2 of the guide into Claude Code. Read the Premise first (Claude Code translates it into English). No invite needed.",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T06:30:35.825Z",
+      "doneAt": null,
+      "movedFrom": "newcode135-prog/mimic M-0017"
+    },
+    {
+      "id": "M-0021",
+      "assignee": "lucas",
+      "order": 3,
+      "title": "Accept the GitHub invite (ravityl) — from the email or github.com/newcode135-prog/mimic-note/invitations. Needed to push (e.g. mark missions done).",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T06:30:35.825Z",
+      "doneAt": null,
+      "movedFrom": "newcode135-prog/mimic M-0018"
+    },
+    {
+      "id": "M-0022",
+      "assignee": "nathan",
+      "order": 1,
+      "title": "Install Claude Code, Node 18+ and git — follow step 1 of mimic-note/guides/nathan-onboarding.md, then run `claude` and sign in.",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T06:33:03.720Z",
+      "doneAt": null,
+      "movedFrom": "newcode135-prog/mimic M-0019"
+    },
+    {
+      "id": "M-0023",
+      "assignee": "nathan",
+      "order": 2,
+      "title": "First login (check-in) — paste the prompt from step 2 of the guide into Claude Code. Read the Premise first (Claude Code translates it into English). No invite needed.",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T06:33:03.720Z",
+      "doneAt": null,
+      "movedFrom": "newcode135-prog/mimic M-0020"
+    },
+    {
+      "id": "M-0024",
+      "assignee": "nathan",
+      "order": 3,
+      "title": "Accept the GitHub invite (nathanywang2003-bit) — from the email or github.com/newcode135-prog/mimic-note/invitations. Needed to push (e.g. mark missions done).",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "changmin",
+      "createdAt": "2026-11-13T06:33:03.720Z",
+      "doneAt": null,
+      "movedFrom": "newcode135-prog/mimic M-0021"
+    },
+    {
+      "id": "M-0025",
+      "assignee": "nathan",
+      "order": 4,
+      "title": "Molib developer setup (new session)",
+      "detail": "Open a NEW Claude Code session in ~ (not the check-in session), paste the Molib onboarding file you received privately, and ask it to clone into ~/molib-ad-research. Accept the GitHub invite to emileepark5281-cmd/molib-ad-research first. Stop before any deploy. Never paste the file or its passwords into this repo, Slack groups, or your [로그아웃] note.",
+      "status": "todo",
+      "createdBy": "yuri",
+      "createdAt": "2026-11-13T06:43:40.518Z",
+      "doneAt": null,
+      "movedFrom": "newcode135-prog/mimic M-0022"
+    },
+    {
+      "id": "M-0026",
+      "assignee": "minho",
+      "order": 4,
+      "title": "유리에게 미리보기 접속 키 전달",
+      "detail": "trycloudflare 미리보기 사이트(MIMIC_SITE_PASSWORD)의 접속 키를 유리에게 개인 메시지로 보내 주세요. 키는 저장소·이슈·단체방에 쓰지 않아요(대전제 9조). 터널 주소가 바뀌면 새 주소도 같이 알려 주세요.",
+      "status": "todo",
+      "createdBy": "yuri",
+      "createdAt": "2026-11-13T07:46:01.859Z",
+      "doneAt": null,
+      "movedFrom": "newcode135-prog/mimic M-0023"
     }
   ]
 }
