@@ -1,5 +1,5 @@
 {
-  "nextId": 37,
+  "nextId": 38,
   "missions": [
     {
       "id": "M-0001",
@@ -416,6 +416,17 @@
       "status": "todo",
       "createdBy": "minho",
       "createdAt": "2026-11-13T10:18:31.286Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0037",
+      "assignee": "yuri",
+      "order": 0,
+      "title": "텔레그램 미션이 잘 보이면 민호님에게 \"잘 보여\"라고 말해 주기",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "minho",
+      "createdAt": "2026-11-13T12:19:48.494Z",
       "doneAt": null
     }
   ]
