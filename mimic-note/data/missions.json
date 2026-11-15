@@ -1,5 +1,5 @@
 {
-  "nextId": 42,
+  "nextId": 43,
   "missions": [
     {
       "id": "M-0001",
@@ -481,6 +481,17 @@
       "status": "todo",
       "createdBy": "yuri",
       "createdAt": "2026-11-15T09:30:02.329Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0042",
+      "assignee": "changmin",
+      "order": 7,
+      "title": "뱅크샐러드 세팅하기",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "yuri",
+      "createdAt": "2026-11-15T09:30:42.591Z",
       "doneAt": null
     }
   ]
