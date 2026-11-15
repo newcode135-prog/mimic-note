@@ -1,5 +1,5 @@
 {
-  "nextId": 41,
+  "nextId": 42,
   "missions": [
     {
       "id": "M-0001",
@@ -470,6 +470,17 @@
       "status": "todo",
       "createdBy": "yuri",
       "createdAt": "2026-11-15T09:26:48.521Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0041",
+      "assignee": "yuri",
+      "order": 14,
+      "title": "경리님 연락 - 유리카드 한도 풀어달라고 하기",
+      "detail": "카드 갯수, 카드 한도 체크 / 예정이 카드 회수",
+      "status": "todo",
+      "createdBy": "yuri",
+      "createdAt": "2026-11-15T09:30:02.329Z",
       "doneAt": null
     }
   ]
