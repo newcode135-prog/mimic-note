@@ -420,10 +420,11 @@
       "order": 11,
       "title": "라는 미션줘 완료하면 나한테말해줘",
       "detail": "",
-      "status": "todo",
+      "status": "done",
       "createdBy": "minho",
       "createdAt": "2026-11-13T10:18:31.286Z",
-      "doneAt": null
+      "doneAt": "2026-11-15T09:28:00.936Z",
+      "doneBy": "yuri"
     },
     {
       "id": "M-0037",
