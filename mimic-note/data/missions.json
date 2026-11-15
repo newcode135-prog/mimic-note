@@ -1,5 +1,5 @@
 {
-  "nextId": 40,
+  "nextId": 41,
   "missions": [
     {
       "id": "M-0001",
@@ -457,6 +457,17 @@
       "createdAt": "2026-11-13T16:24:55.319Z",
       "doneAt": "2026-11-13T16:55:54.074Z",
       "doneBy": "yuri"
+    },
+    {
+      "id": "M-0040",
+      "assignee": "yuri",
+      "order": 13,
+      "title": "파티코어 카페 제작",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "yuri",
+      "createdAt": "2026-11-15T09:26:48.521Z",
+      "doneAt": null
     }
   ],
   "langs": {
