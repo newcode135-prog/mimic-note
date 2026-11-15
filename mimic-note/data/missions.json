@@ -396,10 +396,11 @@
       "order": 9,
       "title": "텔리그램에",
       "detail": "",
-      "status": "todo",
+      "status": "done",
       "createdBy": "minho",
       "createdAt": "2026-11-13T10:18:31.286Z",
-      "doneAt": null
+      "doneAt": "2026-11-15T09:27:24.531Z",
+      "doneBy": "yuri"
     },
     {
       "id": "M-0035",
