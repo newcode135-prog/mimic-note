@@ -408,10 +408,11 @@
       "order": 10,
       "title": "민호한테 답변해봐",
       "detail": "",
-      "status": "todo",
+      "status": "done",
       "createdBy": "minho",
       "createdAt": "2026-11-13T10:18:31.286Z",
-      "doneAt": null
+      "doneAt": "2026-11-15T09:27:39.581Z",
+      "doneBy": "yuri"
     },
     {
       "id": "M-0036",
