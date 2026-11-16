@@ -22,6 +22,9 @@ const ko = {
   completedBy: (n) => `👤 ${n}님이 미션을 완료했어요`,
   markedBy: (n) => ` (${n}님이 완료 처리)`,
   doneProgress: (n, d, total, open) => `📊 ${n}님 진행률 ${d}/${total} · 남은 미션 ${open}개`,
+  // 아침 요약(평일 9시)
+  digestTitle: (n) => `☀️ <b>좋은 아침이에요!</b> 오늘 남은 미션 ${n}개`,
+  digestRequests: (n) => `📨 수락을 기다리는 요청 ${n}개 — 내 이름봇에서 수락·거절할 수 있어요.`,
   // 버튼판
   botBtn: (n) => `${n}봇`,
   teamBtn: '📋 팀 현황',
@@ -154,6 +157,8 @@ const en = {
   completedBy: (n) => `👤 ${n} completed:`,
   markedBy: (n) => ` (marked done by ${n})`,
   doneProgress: (n, d, total, open) => `📊 ${n}'s progress ${d}/${total} · ${open} left`,
+  digestTitle: (n) => `☀️ <b>Good morning!</b> ${n} mission${n === 1 ? '' : 's'} left today`,
+  digestRequests: (n) => `📨 ${n} request${n === 1 ? '' : 's'} waiting for you — accept or decline under your name button.`,
   botBtn: (n) => `${n} bot`,
   teamBtn: '📋 Team',
   sentBtn: '📤 Sent',
@@ -277,6 +282,8 @@ const zh = {
   completedBy: (n) => `👤 ${n} 完成了任务`,
   markedBy: (n) => `（由 ${n} 标记完成）`,
   doneProgress: (n, d, total, open) => `📊 ${n} 的进度 ${d}/${total} · 剩余 ${open} 个`,
+  digestTitle: (n) => `☀️ <b>早上好！</b>今天还有 ${n} 个任务`,
+  digestRequests: (n) => `📨 有 ${n} 个请求等你处理 — 在我的名字按钮里接受或拒绝。`,
   botBtn: (n) => `${n} 机器人`,
   teamBtn: '📋 团队概况',
   sentBtn: '📤 我发出的',

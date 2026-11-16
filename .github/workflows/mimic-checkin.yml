@@ -29,6 +29,10 @@ on:
         description: 같은 내용을 이미 보냈어도 다시 보내기
         type: boolean
         default: false
+      digest:
+        description: 아침 요약을 지금 보내기(시험용 — member 를 주면 그 사람만)
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read

@@ -19,7 +19,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ADMIN_ROLES, findMember, memberByGithub, openMissions, doneMissions, validateDb, validateMembers, chatIdFor, telegramApi , esc, clip, renderTelegram, renderDoneNotice, listKeyboard, langOf, dn } from './lib.mjs';
+import { ADMIN_ROLES, findMember, memberByGithub, openMissions, doneMissions, validateDb, validateMembers, chatIdFor, telegramApi , esc, clip, renderTelegram, renderDoneNotice, listKeyboard, langOf, dn, pendingRequests, digestText } from './lib.mjs';
 
 export { renderTelegram, renderDoneNotice };
 
@@ -291,6 +291,35 @@ export async function runNotify({ env, git, gh, send, relay = null, ledger, now 
   }
   ledger.notices = keep.filter((n) => n.tries === undefined || n.tries < 20).slice(-50);
 
+  // 3-2) 아침 요약: 평일 9~12시(한국 시간)에 사람마다 하루 한 번, 남은 미션이나 받은 요청이 있으면 그 사람 언어로 + ✅ 버튼.
+  //      그 시간대에 처음 도는 실행(10분 정기 검사·push 어느 것이든)이 보낸다 — GitHub 정기 실행이 늦거나 빠져도 놓치지 않게.
+  //      미연결이면 오늘은 다시 시도하지 않고, 발송 실패만 같은 시간대의 다음 실행에서 다시.
+  //      수동 실행 digest=true 면 시간과 상관없이(시험용 — member 를 주면 그 사람만).
+  if (!halted && !curBad.length) {
+    const kst = new Date(Date.parse(now()) + 9 * 3600e3);
+    const today = kst.toISOString().slice(0, 10);
+    const day = kst.getUTCDay();
+    const force = env.INPUT_DIGEST === 'true';
+    const only = force && env.INPUT_MEMBER ? findMember(env.INPUT_MEMBER, cur.members)?.id || '(없음)' : null;
+    if (force || (kst.getUTCHours() >= 9 && kst.getUTCHours() < 12 && day >= 1 && day <= 5)) {
+      for (const m of cur.members) {
+        if (only && m.id !== only) continue;
+        const st = (ledger.members[m.id] ||= {});
+        if (!force && st.digestDate === today) continue;
+        if (!openMissions(cur.db, m.id).length && !pendingRequests(cur.db, m.id).length) continue;
+        const base = { member: m.id, kind: 'digest' };
+        try {
+          const r = await deliver(m.id, digestText(m, cur.db), { reply_markup: listKeyboard(cur.db, m.id) });
+          if (r.status === 'sent' || r.status === 'unconnected') st.digestDate = today;
+          if (r.status === 'sent') results.push({ ...base, status: 'sent', messageId: r.messageId });
+          else if (r.status !== 'unconnected') results.push({ ...base, status: r.status });
+        } catch (e) {
+          results.push({ ...base, status: 'failed', error: String(e.message).slice(0, 200), code: e.code ?? null });
+        }
+      }
+    }
+  }
+
   // 4) 새 문제(권한 없음·깨진 데이터·기록 다시 쓰기) → 대표관리자에게 경고(같은 커밋은 한 번만)
   // 경고 받을 대표관리자는 확인된 명부 기준(멈춘 실행은 지난번에 확인된 대표관리자) — 다시 쓰인 명부를 믿지 않는다
   const ownerMember = halted ? (ledger.owner ? { id: ledger.owner } : null) : cur.members.find((m) => m.role === 'owner');
@@ -362,7 +391,8 @@ function makeGh(env) {
 // 흉내 낼 수 있다(github.mjs verifiedSha). 팀원 이름·아이디 모양(글자·숫자·_·-, 40자 이하)만 받는다.
 export function dispatchInputs(event) {
   const raw = String(event?.inputs?.member ?? '').trim();
-  return { member: !raw ? '' : /^[\p{L}\p{N}_-]{1,40}$/u.test(raw) ? raw : '(형식이 틀린 입력)', force: String(event?.inputs?.force) === 'true' ? 'true' : 'false' };
+  const yes = (v) => (String(v) === 'true' ? 'true' : 'false');
+  return { member: !raw ? '' : /^[\p{L}\p{N}_-]{1,40}$/u.test(raw) ? raw : '(형식이 틀린 입력)', force: yes(event?.inputs?.force), digest: yes(event?.inputs?.digest) };
 }
 
 const LABEL = { sent: '발송 성공', 'already-sent': '같은 내용 이미 보냄', unconnected: '미연결', unconfigured: '봇 토큰 미설정', failed: '실패', alert: '대표관리자 경고' };
@@ -371,11 +401,13 @@ async function main() {
   const env = { ...process.env };
   delete env.INPUT_MEMBER;
   delete env.INPUT_FORCE;
+  delete env.INPUT_DIGEST;
   if (env.EVENT_NAME === 'workflow_dispatch' && env.GITHUB_EVENT_PATH) {
     try {
       const i = dispatchInputs(JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8')));
       env.INPUT_MEMBER = i.member;
       env.INPUT_FORCE = i.force;
+      env.INPUT_DIGEST = i.digest;
     } catch (e) { console.log(`::warning title=미믹노트::수동 실행 입력값을 못 읽음(${e.message})`); }
   }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -418,7 +450,7 @@ async function main() {
   }
 
   if (env.GITHUB_STEP_SUMMARY) {
-    const rows = r.results.map((x) => `| ${x.member}${x.kind === 'done-notice' ? ` (완료 알림 · ${x.about})` : ''} | ${LABEL[x.status] || x.status} | ${x.error ? String(x.error).replace(/\|/g, '/') : ''} |`);
+    const rows = r.results.map((x) => `| ${x.member}${x.kind === 'done-notice' ? ` (완료 알림 · ${x.about})` : x.kind === 'digest' ? ' (아침 요약)' : ''} | ${LABEL[x.status] || x.status} | ${x.error ? String(x.error).replace(/\|/g, '/') : ''} |`);
     fs.appendFileSync(env.GITHUB_STEP_SUMMARY, ['### 미믹노트 알림', '', '| 팀원 | 결과 | 비고 |', '| --- | --- | --- |', ...(rows.length ? rows : ['| - | 보낼 대상 없음 | |']), '',
       ...r.problems.map((p) => `- ❌ ${p.kind}: ${(p.detail || []).join(' / ')}`), ''].join('\n'));
   }

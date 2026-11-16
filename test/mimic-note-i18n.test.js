@@ -10,7 +10,7 @@ import { processUpdates } from '../mimic-note/telegram.mjs';
 import { runNotify, verifyChange } from '../mimic-note/notify.mjs';
 import { fakeGit, fakeTelegram, DB_FILE, MEMBERS_FILE } from './mimic-note-fakes.js';
 
-const T = '2026-11-13T00:00:00.000Z';
+const T = '2026-11-13T05:00:00.000Z'; // 금요일 오후 2시(한국) — 아침 요약 시간대(9~12시) 밖
 const M = [
   { id: 'changmin', name: '창민', role: 'owner', github: 'darrenpual' },
   { id: 'minho', name: '민호', role: 'admin', github: 'newcode135-prog' },
