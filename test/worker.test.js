@@ -358,6 +358,34 @@ test('워커 ✏️ 수정·취소: 관리자 이름봇 → 수정·취소 → �
   assert.equal(w.kv.has('app:compose:1002'), false);
 });
 
+test('리뷰 회귀(워커): 같은 제목은 확인 전에 그 사람 언어로 안내(쓰기 유지), 두 확인이 겹치면 늦은 쪽은 "바뀐 미션", 이미 취소된 것은 "이미 취소"', async () => {
+  const w = world();
+  await w.importer({ owners: { 1002: 'minho', 1003: 'yuri' }, codes: [], verified: w.root });
+  await w.tap(1003, 'l:en');
+  await w.tap(1003, 'u:M-0001');
+  await w.msg(1003, '파일 다운로드 API 테스트'); // 민호의 2번과 같은 제목
+  assert.equal(w.lastText(), 'There is already a mission with this title: 파일 다운로드 API 테스트 — send a different title.');
+  assert.equal(w.kv.has('app:compose:1003'), true, '다른 제목으로 다시 보낼 수 있게 쓰기 상태 유지');
+  await w.msg(1003, '로그인 UI 개발 v2');
+  assert.match(w.lastText(), /Change <b>Minho<\/b>'s mission like this\?/);
+  const late = w.askData(); // 유리의 확인(지금: 로그인 UI 개발)
+  await w.tap(1002, 'u:M-0001');
+  await w.msg(1002, '로그인 UI 개발 v3');
+  await w.tap(1002, w.askData()); // 민호가 먼저 v3 로
+  assert.equal(w.dbAtHead().missions.find((m) => m.id === 'M-0001').title, '로그인 UI 개발 v3');
+  await w.tap(1003, late);
+  assert.equal(w.lastText(), 'Already done or changed. Try 🔄 Refresh.', '늦은 확인은 보지 못한 v3 를 덮어쓰지 않음');
+  assert.equal(w.dbAtHead().missions.find((m) => m.id === 'M-0001').title, '로그인 UI 개발 v3');
+  // 🗑 두 번 눌러 확인 두 개 → 하나 저장 뒤 나머지는 "이미 취소"
+  await w.tap(1002, 'd:M-0002');
+  const first = w.askData();
+  await w.tap(1002, 'd:M-0002');
+  const second = w.askData();
+  await w.tap(1002, first);
+  await w.tap(1002, second);
+  assert.equal(w.lastText(), '🗑 민호님의 그 미션은 이미 취소돼 있어요.');
+});
+
 test('워커: main 에 확인 안 된 변경이 있거나, 확인과 저장 사이에 끼어들거나, 확인 전 변경을 되돌린 push 위에는 저장하지 않음', async () => {
   // ① 처음부터 main 에 확인 안 된 명부 변경
   const a = world();

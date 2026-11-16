@@ -52,7 +52,9 @@ export async function handleUpdate(u, ctx) {
     const t = tr(lang);
     const key = ctx.randomKey();
     // targetName: 커밋 메시지용(한글 이름), shown: 화면에 보일 이름(누른 사람의 언어)
-    await ctx.kv.put(`pend:${key}`, { action: d.action, chatId: replyTo, fromId, ownerId: d.owner.id, targetId: d.target.id, targetName: d.target.name, shown: dn(d.target, lang), lang, items: d.items || [], ids: picked.map((x) => x.id), at: Date.now() }, PENDING_SEC);
+    // was: 취소·수정 확인 화면에 보여 준 지금 제목(저장 때 그사이 바뀌었는지 본다)
+    const was = d.action === 'cancel' || d.action === 'edit' ? { was: picked[0]?.title ?? null } : {};
+    await ctx.kv.put(`pend:${key}`, { action: d.action, chatId: replyTo, fromId, ownerId: d.owner.id, targetId: d.target.id, targetName: d.target.name, shown: dn(d.target, lang), lang, items: d.items || [], ids: picked.map((x) => x.id), ...was, at: Date.now() }, PENDING_SEC);
     const yes = { add: t.yesAdd, request: t.yesRequest, set: t.yesSet, done: t.yesDone, cancel: t.yesCancel, edit: t.yesEdit }[d.action];
     const no = d.action === 'cancel' ? t.keepBtn : t.cancelBtn; // [🗑 미션 취소하기] 옆에 [취소]를 두면 헷갈려서
     await send(replyTo, confirmText(d, picked, lang), { reply_markup: { inline_keyboard: [[{ text: yes, callback_data: `g:${key}` }, { text: no, callback_data: `x:${key}` }]] } });
@@ -107,7 +109,11 @@ export async function handleUpdate(u, ctx) {
       } catch (e) {
         try {
           const { db: now } = await ctx.state();
-          if (applied(p, now)) return void (await edit(replyTo, mid, (p.action === 'done' ? t.alreadyDone : t.alreadySaved)(esc(p.shown || p.targetName))));
+          if (applied(p, now)) return void (await edit(replyTo, mid, (p.action === 'done' ? t.alreadyDone : p.action === 'cancel' ? t.alreadyCancelled : t.alreadySaved)(esc(p.shown || p.targetName))));
+          if (p.action === 'cancel' || p.action === 'edit') { // 그사이 완료·취소되거나 다른 관리자가 고침 → 누른 사람의 언어로 안내
+            const m = now.missions.find((x) => x.id === p.ids?.[0]);
+            if (!m || m.status !== 'todo' || (p.was != null && m.title !== p.was)) return void (await edit(replyTo, mid, t.changed));
+          }
         } catch { /* 아래 실패 표시 */ }
         await edit(replyTo, mid, t.saveFail(esc(e.message)));
       }
@@ -201,7 +207,11 @@ export async function handleUpdate(u, ctx) {
     const chatOwners = new Map([[replyTo, ownerId]]); // 판단에는 보낸 사람 것만 있으면 된다
     // ✏️ 수정 중이면 고칠 미션도 넘긴다(지금 DB 의 것 — 그사이 없어졌으면 null)
     const compose = ct ? { target: ct, ...(c.edit ? { edit: db.missions.find((x) => x.id === c.edit) || null } : {}) } : null;
-    const d = decide(msg, { members, chatOwners, compose, lang });
+    let d = decide(msg, { members, chatOwners, compose, lang });
+    // ✏️ 같은 사람의 다른 남은 미션과 제목이 같으면 확인 전에 알려 다시 적게 한다(쓰기 상태는 남김)
+    if (d.kind === 'act' && d.action === 'edit' && openMissions(db, d.target.id).some((x) => x.id !== d.picked[0].id && normTitle(x.title) === normTitle(d.items[0].title))) {
+      d = { kind: 'act-error', chatId: replyTo, error: t.editDuplicate(d.items[0].title) };
+    }
     if (c && d.kind !== 'act-error') await ctx.kv.del(`compose:${replyTo}`); // 내용이 잘못됐으면 다시 적을 수 있게 남겨 둔다
     if (d.kind === 'ignore') return;
     if (d.kind === 'link') return void (await send(replyTo, t.alreadyLinked(esc(dn(owner, lang))))); // 남의 링크를 누름 — 연결은 그대로
@@ -230,7 +240,12 @@ export function applied(p, db) {
   const titles = (list) => new Set(list.map((m) => normTitle(m.title)));
   if (p.action === 'done') return p.ids.length > 0 && p.ids.every((id) => db.missions.find((m) => m.id === id)?.status === 'done');
   if (p.action === 'cancel') return p.ids.length > 0 && p.ids.every((id) => { const m = db.missions.find((x) => x.id === id); return m?.status === 'replaced' && Boolean(m.cancelledBy); });
-  if (p.action === 'edit') { const m = db.missions.find((x) => x.id === p.ids?.[0]); return m?.status === 'todo' && m.title === String(p.items?.[0]?.title || '').trim(); }
+  if (p.action === 'edit') { // editMission 과 같은 규칙: 제목은 그대로 비교, 설명은 새로 적었을 때만
+    const it = p.items?.[0] || {};
+    const m = db.missions.find((x) => x.id === p.ids?.[0]);
+    const d = String(it.detail || '').trim();
+    return m?.status === 'todo' && m.title === String(it.title || '').trim() && (!d || (m.detail || '') === d);
+  }
   const items = (p.items || []).map((it) => normTitle(it.title)).filter(Boolean);
   if (!items.length) return false;
   const have = titles(p.action === 'request' ? pendingRequests(db, p.targetId) : openMissions(db, p.targetId));

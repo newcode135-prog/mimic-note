@@ -130,7 +130,7 @@ test('문구: 확인·결과·알림(받는 사람 언어, 담당자에게는 "�
   assert.equal(confirmText({ action: 'cancel', target: NATHAN }, picked), `🗑 <b>네이뜬</b>님의 이 미션을 취소할까요? (지우지 않고 보관해요)\n• [${m1.id}] 개발 환경 설치`);
   assert.equal(confirmText({ action: 'edit', target: NATHAN, items: [{ title: 'A <b>', detail: '설명' }] }, [{ id: m2.id, title: m2.title }]),
     '✏️ <b>네이뜬</b>님의 미션을 이렇게 고칠까요?\n• 지금: 로그인 화면\n• 새로: A &lt;b&gt;\n<blockquote expandable>설명</blockquote>');
-  assert.match(editPrompt(NATHAN, m2, db), /^✏️ <b>네이뜬<\/b>님의 2번 미션을 고쳐요\.\n지금: <code>로그인 화면<\/code>[\s\S]*제목만 보내면 설명은 그대로/);
+  assert.match(editPrompt(NATHAN, m2, db), /^✏️ <b>네이뜬<\/b>님의 2번 미션을 고쳐요\.\n지금: <code>로그인 화면<\/code>[\s\S]*보낸 글 전체가 새 제목이에요[\s\S]*설명도 바꾸려면 <code>1\. 새 제목<\/code>/);
   assert.match(editPrompt(NATHAN, m2, db, 'zh'), /第 2 个任务/);
 
   const p = { ids: [m1.id], targetId: 'nathan' };
@@ -146,6 +146,8 @@ test('문구: 확인·결과·알림(받는 사람 언어, 담당자에게는 "�
   const w2 = { result: ACTIONS.edit.apply(e)(db, M, MINHO) };
   assert.equal(applied({ ...e, action: 'edit' }, db), true);
   assert.equal(applied({ ...e, action: 'edit', items: [{ title: '다른 제목' }] }, db), false);
+  // 리뷰 회귀: 설명만 고치다 저장이 실패하면 "이미 저장됨"이 아니라 실패로(제목이 같아도 설명을 비교)
+  assert.equal(applied({ ...e, action: 'edit', items: [{ title: '로그인 화면 v2', detail: '아직 저장 안 된 설명' }] }, db), false);
   assert.match(resultText('edit', '네이뜬', w2), /^✏️ 네이뜬님의 미션을 고쳤어요\n• 로그인 화면\n→ 로그인 화면 v2\n\n/);
   assert.equal(changeNotice('edit', w2.result, MINHO, NATHAN, false), '✏️ <b>미션이 바뀌었어요</b>\n\n민호님이 네이뜬님의 미션을 고쳤어요:\n• 로그인 화면\n→ 로그인 화면 v2');
   const w3 = { result: editMission(db, 'nathan', m2.id, { title: '로그인 화면 v2', detail: '새 설명' }, 'minho', M, T) };
@@ -153,6 +155,16 @@ test('문구: 확인·결과·알림(받는 사람 언어, 담당자에게는 "�
 
   assert.match(sentText(CHANGMIN, M, db), /🔨 진행 중 2<\/b>[\s\S]*<b>🗑 취소됨 1<\/b>\n• 네이뜬 — 개발 환경 설치$/);
   assert.match(sentText(CHANGMIN, M, db, 'en'), /🗑 Cancelled 1/);
+});
+
+test('리뷰 회귀: 확인 화면에 보여 준 제목(was)과 지금 제목이 다르면(다른 관리자가 그사이 고침) 취소·수정하지 않음', () => {
+  const db = sample();
+  const [m1, m2] = openMissions(db, 'nathan');
+  ACTIONS.edit.apply({ targetId: 'nathan', ids: [m2.id], items: [{ title: 'C' }], was: '로그인 화면' })(db, M, YURI); // 유리가 먼저 C 로
+  assert.throws(() => ACTIONS.edit.apply({ targetId: 'nathan', ids: [m2.id], items: [{ title: 'B' }], was: '로그인 화면' })(db, M, MINHO), /바뀐 미션/);
+  assert.throws(() => ACTIONS.cancel.apply({ targetId: 'nathan', ids: [m2.id], was: '로그인 화면' })(db, M, MINHO), /바뀐 미션/, '보지 못한 제목의 미션은 취소 안 함');
+  assert.equal(m2.title, 'C');
+  assert.equal(ACTIONS.cancel.apply({ targetId: 'nathan', ids: [m1.id] })(db, M, MINHO).mission.status, 'replaced', 'was 가 없는 예전 확인은 그대로 동작');
 });
 
 // ---------------- GitHub Actions(notify): 봇이 저장한 취소·수정 ----------------

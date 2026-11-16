@@ -333,23 +333,24 @@ export function respondRequest(db, missionId, accept, by, members, now = new Dat
 // ---- 미션 취소·수정(관리자만 — 텔레그램 봇의 ✏️ 수정·취소) ----
 // 남은(todo) 미션 하나만. 취소는 지우지 않고 보관한다: status 'replaced'(미션설정으로 빠진 미션과 같은 보관 상태 —
 // 아직 git pull 안 한 다른 컴퓨터의 예전 코드도 그대로 읽게) + cancelledAt·cancelledBy.
-function openOne(db, memberId, missionId) {
+// was: 확인 화면에 보여 준 제목 — 그사이 다른 관리자가 고쳤으면 보지 못한 미션을 취소·덮어쓰지 않게 멈춘다
+function openOne(db, memberId, missionId, was) {
   const m = db.missions.find((x) => x.id === missionId);
-  if (!m || m.assignee !== memberId || m.status !== 'todo') throw new Error('이미 완료·취소됐거나 바뀐 미션이에요. 🔄 새로고침해 보세요.');
+  if (!m || m.assignee !== memberId || m.status !== 'todo' || (was != null && m.title !== was)) throw new Error('이미 완료·취소됐거나 바뀐 미션이에요. 🔄 새로고침해 보세요.');
   return m;
 }
 
-export function cancelMission(db, memberId, missionId, by, members, now = new Date().toISOString()) {
+export function cancelMission(db, memberId, missionId, by, members, now = new Date().toISOString(), was = null) {
   const author = requireAdmin(by, members, '미션을 취소할');
-  const m = openOne(db, memberId, missionId);
+  const m = openOne(db, memberId, missionId, was);
   Object.assign(m, { status: 'replaced', cancelledAt: now, cancelledBy: author.id });
   return { mission: m, changed: true };
 }
 
 // 수정: 제목을 바꾸고, 설명은 새로 적었을 때만 바꾼다(제목만 보내면 설명은 그대로). ID·순서·후순위는 그대로.
-export function editMission(db, memberId, missionId, item, by, members, now = new Date().toISOString()) {
+export function editMission(db, memberId, missionId, item, by, members, now = new Date().toISOString(), was = null) {
   const author = requireAdmin(by, members, '미션을 고칠');
-  const m = openOne(db, memberId, missionId);
+  const m = openOne(db, memberId, missionId, was);
   const title = String(item?.title || '').trim();
   if (!title) throw new Error('미션 제목이 비어 있습니다.');
   if (openMissions(db, memberId).some((x) => x.id !== m.id && normTitle(x.title) === normTitle(title))) throw new Error(`같은 제목의 미션이 이미 있어요: ${title}`);
@@ -833,8 +834,8 @@ export const ACTIONS = {
   request: { label: '미션요청', apply: (p) => (db, ms, actor) => requestMissions(db, p.targetId, p.items, actor.id, ms) },
   set: { label: '미션설정', apply: (p) => (db, ms, actor) => setMissions(db, p.targetId, p.items, actor.id, ms) },
   done: { label: '미션완료', apply: (p) => (db, ms, actor) => ({ done: completeMissions(db, p.targetId, p.ids, { by: actor.id, members: ms }), changed: true }) },
-  cancel: { label: '미션취소', apply: (p) => (db, ms, actor) => cancelMission(db, p.targetId, p.ids[0], actor.id, ms) },
-  edit: { label: '미션수정', apply: (p) => (db, ms, actor) => editMission(db, p.targetId, p.ids[0], p.items[0], actor.id, ms) },
+  cancel: { label: '미션취소', apply: (p) => (db, ms, actor) => cancelMission(db, p.targetId, p.ids[0], actor.id, ms, undefined, p.was) },
+  edit: { label: '미션수정', apply: (p) => (db, ms, actor) => editMission(db, p.targetId, p.ids[0], p.items[0], actor.id, ms, undefined, p.was) },
 };
 
 // 저장 결과 문구(확인 메시지를 이 문구로 바꾼다). targetName: 보는 사람의 언어로 표시할 이름(이스케이프 전).
