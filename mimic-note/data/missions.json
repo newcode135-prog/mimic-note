@@ -494,5 +494,8 @@
       "createdAt": "2026-11-15T09:30:42.591Z",
       "doneAt": null
     }
-  ]
+  ],
+  "langs": {
+    "minho": "en"
+  }
 }
