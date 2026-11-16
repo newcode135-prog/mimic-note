@@ -456,6 +456,13 @@ export function renderDoneNotice(assignee, items, db, members = [], lang = 'ko')
   return [t.doneTitle, '', t.completedBy(n), ...items.slice(0, 10).map(line), '', t.doneProgress(n, done, open + done, open)].join('\n');
 }
 
+// 아침 요약(평일 9시, 그 사람의 언어로): 인사 + 지금 남은 미션 목록 + (관리자면) 기다리는 요청 수
+export function digestText(member, db, lang = langOf(db, member.id)) {
+  const t = tr(lang);
+  const reqs = pendingRequests(db, member.id).length;
+  return [t.digestTitle(openMissions(db, member.id).length), '', renderTelegram(member, db, { lang }), ...(reqs ? ['', t.digestRequests(reqs)] : [])].join('\n');
+}
+
 export const BOT_NAME = '코어 오브 미믹노트';
 
 export const TEAM_BUTTON = tr('ko').teamBtn;

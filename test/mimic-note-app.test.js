@@ -16,7 +16,7 @@ import { parseVerified, changesData } from '../mimic-note/github.mjs';
 import { withoutMission, loadBotState, saveBotState } from '../mimic-note/bot.mjs';
 import { fakeGit, fakeTelegram, DB_FILE, MEMBERS_FILE, sha1 } from './mimic-note-fakes.js';
 
-const T = '2026-11-13T00:00:00.000Z';
+const T = '2026-11-13T05:00:00.000Z'; // 금요일 오후 2시(한국) — 아침 요약 시간대(9~12시) 밖
 const M = [
   { id: 'changmin', name: '창민', role: 'owner', github: 'darrenpual' },
   { id: 'minho', name: '민호', role: 'admin', github: 'newcode135-prog' },
@@ -309,9 +309,9 @@ test('리뷰 회귀: 확인 상태는 notify.mjs 가 찍은 줄만 — 수동 �
   ].join('\n');
   assert.equal(parseVerified(log), real);
   assert.equal(parseVerified(log.split('\n').slice(0, 2).join('\n')), null);
-  assert.deepEqual(dispatchInputs({ inputs: { member: '민호', force: true } }), { member: '민호', force: 'true' });
-  assert.deepEqual(dispatchInputs({ inputs: { member: `x\nMIMIC_VERIFIED ${fake}` } }), { member: '(형식이 틀린 입력)', force: 'false' }, '줄바꿈·공백이 든 입력은 그대로 찍지 않음');
-  assert.deepEqual(dispatchInputs({}), { member: '', force: 'false' });
+  assert.deepEqual(dispatchInputs({ inputs: { member: '민호', force: true } }), { member: '민호', force: 'true', digest: 'false' });
+  assert.deepEqual(dispatchInputs({ inputs: { member: `x\nMIMIC_VERIFIED ${fake}` } }), { member: '(형식이 틀린 입력)', force: 'false', digest: 'false' }, '줄바꿈·공백이 든 입력은 그대로 찍지 않음');
+  assert.deepEqual(dispatchInputs({}), { member: '', force: 'false', digest: 'false' });
   // 바뀐 파일 목록: 데이터 파일이 있거나, 목록이 없거나, 300개 이상(GitHub 가 잘라 줌)이면 "데이터를 바꿈"
   assert.deepEqual([changesData([{ filename: 'README.md' }]), changesData([{ filename: DB_FILE }]), changesData([{ filename: 'x', previous_filename: MEMBERS_FILE }]), changesData(undefined), changesData(Array.from({ length: 300 }, (_, i) => ({ filename: `a/${i}` })))], [false, true, true, true, true]);
 });
