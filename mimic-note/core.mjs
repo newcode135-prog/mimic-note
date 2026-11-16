@@ -204,6 +204,15 @@ export function parseMissionList(text) {
   return items;
 }
 
+// ✏️ 수정 글(미션 하나): 첫 줄에 번호("1. 새 제목")가 있으면 그 줄이 제목, 다음 줄부터 전부 설명(-·• 줄도 설명).
+// 번호가 없으면 글 전체가 제목(줄은 띄어쓰기로 이어 붙임, 설명은 비워 둠 → editMission 이 기존 설명을 그대로 둔다).
+export function parseEdit(text) {
+  const lines = String(text || '').replace(/\r/g, '').split('\n').filter((l) => l.trim());
+  const head = lines[0]?.match(ITEM_RE);
+  if (head) return { title: head[2].trim(), detail: lines.slice(1).map((l) => l.trim()).join('\n') };
+  return { title: lines.map((l) => l.trim()).join(' '), detail: '' };
+}
+
 function requireAdmin(by, members, what) {
   const author = requireMember(by, members);
   if (!ADMIN_ROLES.has(author.role)) throw new Error(`${author.name}님은 관리자가 아니라 ${what} 수 없습니다.`);
@@ -328,6 +337,39 @@ export function respondRequest(db, missionId, accept, by, members, now = new Dat
     Object.assign(m, { status: 'todo', acceptedAt: now, acceptedBy: actor.id });
   } else Object.assign(m, { status: 'declined', declinedAt: now, declinedBy: actor.id });
   return { mission: m, changed: true };
+}
+
+// ---- 미션 취소·수정(관리자만 — 텔레그램 봇의 ✏️ 수정·취소) ----
+// 남은(todo) 미션 하나만. 취소는 지우지 않고 보관한다: status 'replaced'(미션설정으로 빠진 미션과 같은 보관 상태 —
+// 아직 git pull 안 한 다른 컴퓨터의 예전 코드도 그대로 읽게) + cancelledAt·cancelledBy.
+// was: 확인 화면에 보여 준 제목 — 그사이 다른 관리자가 고쳤으면 보지 못한 미션을 취소·덮어쓰지 않게 멈춘다
+function openOne(db, memberId, missionId, was) {
+  const m = db.missions.find((x) => x.id === missionId);
+  if (!m || m.assignee !== memberId || m.status !== 'todo' || (was != null && m.title !== was)) throw new Error('이미 완료·취소됐거나 바뀐 미션이에요. 🔄 새로고침해 보세요.');
+  return m;
+}
+
+export function cancelMission(db, memberId, missionId, by, members, now = new Date().toISOString(), was = null) {
+  const author = requireAdmin(by, members, '미션을 취소할');
+  const m = openOne(db, memberId, missionId, was);
+  Object.assign(m, { status: 'replaced', cancelledAt: now, cancelledBy: author.id });
+  return { mission: m, changed: true };
+}
+
+// 수정: 제목을 바꾸고, 설명은 새로 적었을 때만 바꾼다(제목만 보내면 설명은 그대로). ID·순서·후순위는 그대로.
+export function editMission(db, memberId, missionId, item, by, members, now = new Date().toISOString(), was = null) {
+  const author = requireAdmin(by, members, '미션을 고칠');
+  const m = openOne(db, memberId, missionId, was);
+  const title = String(item?.title || '').trim();
+  if (!title) throw new Error('미션 제목이 비어 있습니다.');
+  if (openMissions(db, memberId).some((x) => x.id !== m.id && normTitle(x.title) === normTitle(title))) throw new Error(`같은 제목의 미션이 이미 있어요: ${title}`);
+  const before = { title: m.title, detail: m.detail || '' };
+  const detail = String(item.detail || '').trim();
+  m.title = title;
+  if (detail) m.detail = detail;
+  const changed = m.title !== before.title || (m.detail || '') !== before.detail;
+  if (changed) Object.assign(m, { editedAt: now, editedBy: author.id });
+  return { mission: m, before, changed };
 }
 
 export function memberByGithub(login, members) {
@@ -549,9 +591,42 @@ export function boardKeyboard(viewer, member, db, lang = langOf(db, viewer.id)) 
     const mode = sendMode(viewer, member);
     if (mode) rows.push([{ text: t.giveBtn(dn(member, lang), mode), callback_data: `s:${member.id}` }]);
   }
+  if (ADMIN_ROLES.has(viewer.role) && openMissions(db, member.id).length) rows.push([{ text: t.manageBtn, callback_data: `m:${member.id}` }]);
   rows.push([{ text: t.refresh, callback_data: `v:${member.id}` }]);
   return { inline_keyboard: rows };
 }
+
+// ✏️ 수정·취소 화면(관리자): 그 사람 미션 목록 + 미션마다 [✏️ 번호][🗑 번호](1~10번) + [◀ 돌아가기]
+export function manageText(member, db, lang = 'ko') {
+  return [renderTelegram(member, db, { lang }), '', tr(lang).manageHint(openMissions(db, member.id).length > 10)].join('\n');
+}
+
+export function manageKeyboard(member, db, lang = 'ko') {
+  const rows = openMissions(db, member.id).slice(0, 10).map((m, i) => [{ text: `✏️ ${i + 1}`, callback_data: `u:${m.id}` }, { text: `🗑 ${i + 1}`, callback_data: `d:${m.id}` }]);
+  rows.push([{ text: tr(lang).backBtn, callback_data: `v:${member.id}` }]);
+  return { inline_keyboard: rows };
+}
+
+// ✏️ 를 누른 뒤 보내는 안내(지금 제목은 눌러서 복사할 수 있게 <code>)
+export function editPrompt(target, mission, db, lang = 'ko') {
+  const i = openMissions(db, target.id).findIndex((x) => x.id === mission.id) + 1;
+  return tr(lang).editPrompt(esc(dn(target, lang)), i, esc(mission.title)).join('\n');
+}
+
+// 미션 취소·수정 알림(담당자·미션을 준 사람에게, 받는 사람의 언어로). r: cancelMission/editMission 결과, self: 받는 사람이 담당자
+export function changeNotice(action, r, actor, assignee, self, lang = 'ko') {
+  const t = tr(lang);
+  const a = esc(dn(actor, lang));
+  const whose = t.whose(esc(dn(assignee, lang)), self, actor.id === assignee.id); // 내 · 본인 · 네이뜬님의
+  const m = r.mission;
+  if (action === 'cancel') return [t.cancelNoticeTitle, '', t.cancelNotice(a, whose), `• ${esc(clip(m.title, 150))}`].join('\n');
+  return [t.editNoticeTitle, '', t.editNotice(a, whose), ...editLines(r, t)].join('\n');
+}
+
+// 수정 전후(제목이 같으면 설명만 고친 것)
+const editLines = (r, t) => (r.before.title === r.mission.title
+  ? [`• ${esc(clip(r.mission.title, 150))} ${t.detailEdited}`]
+  : [`• ${esc(clip(r.before.title, 150))}`, `→ ${esc(clip(r.mission.title, 150))}`]);
 
 // 팀 현황: 사람마다 남은·완료(+관리자는 받은 요청), 텔레그램 연결 여부(linked: 연결된 팀원 아이디 Set)
 export function teamText(members, db, linked = null, lang = 'ko') {
@@ -582,6 +657,7 @@ export function sentText(viewer, members, db, lang = langOf(db, viewer.id)) {
   block(t.sentProgress, group('todo'));
   block(t.sentDone, group('done'), 5);
   block(t.sentDeclined, group('declined'), 5);
+  block(t.sentCancelled, mine.filter((m) => m.status === 'replaced' && m.cancelledBy), 5);
   return lines.join('\n').trimEnd();
 }
 
@@ -606,7 +682,8 @@ export function respondNotice(mission, accept, actor, assignee, lang = 'ko') {
 
 // 인라인 버튼(callback_data) 하나를 어떻게 처리할지(순수 함수). viewer: 누른 사람(연결된 팀원, 없으면 null)
 //   v:<팀원> 보기·새로고침 · s:<팀원> 미션 주기/요청 시작 · c:<미션> 완료(확인 받음) · a:/n:<미션> 요청 수락/거절
-//   l:<ko|en|zh> 언어 고르기 · g:/x:<키> 확인/취소. 안내 문구는 누른 사람의 언어로.
+//   l:<ko|en|zh> 언어 고르기 · g:/x:<키> 확인/취소 · m:<팀원> ✏️ 수정·취소 화면 · u:/d:<미션> 수정/취소(관리자만)
+//   안내 문구는 누른 사람의 언어로.
 export function decideCallback(data, { viewer, members, db, lang = viewer ? langOf(db, viewer.id) : 'ko' }) {
   const t = tr(lang);
   const m = String(data || '').match(/^([a-z]):([\w-]{1,40})$/);
@@ -615,10 +692,11 @@ export function decideCallback(data, { viewer, members, db, lang = viewer ? lang
   if (act === 'g' || act === 'x') return { kind: 'pending', confirm: act === 'g', key: arg };
   if (!viewer) return { kind: 'stale', text: t.linkFirst };
   if (act === 'l') return isLang(arg) ? { kind: 'lang', lang: arg } : { kind: 'stale', text: t.unknownBtn };
-  if (act === 'v' || act === 's') {
+  if (act === 'v' || act === 's' || act === 'm') {
     const member = members.find((x) => x.id === arg);
     if (!member) return { kind: 'stale', text: t.notInRoster };
     if (act === 'v') return { kind: 'board', member };
+    if (act === 'm') return ADMIN_ROLES.has(viewer.role) ? { kind: 'manage', member } : { kind: 'stale', text: t.manageAdmin };
     const mode = sendMode(viewer, member);
     return mode ? { kind: 'compose', target: member, mode } : { kind: 'stale', text: sendDeniedText(viewer, member, members, lang).replace(/<[^>]+>/g, '') };
   }
@@ -635,6 +713,11 @@ export function decideCallback(data, { viewer, members, db, lang = viewer ? lang
     if (act === 'a' && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: t.acceptAdmin };
     if (act === 'n' && viewer.id !== mission.assignee && !ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: t.declineWho };
     return { kind: 'respond', accept: act === 'a', mission, target, requester: members.find((x) => x.id === mission.createdBy) || null };
+  }
+  if (act === 'u' || act === 'd') {
+    if (!ADMIN_ROLES.has(viewer.role)) return { kind: 'stale', text: t.manageAdmin };
+    if (mission.status !== 'todo') return { kind: 'stale', text: t.changed };
+    return act === 'd' ? { kind: 'confirm-cancel', target, picked: [{ id: mission.id, title: mission.title }] } : { kind: 'edit-start', target, mission };
   }
   return { kind: 'stale', text: t.unknownBtn };
 }
@@ -700,6 +783,16 @@ export function decide(msg, { members, chatOwners, compose = null, lang = 'ko' }
     if (langMenu) return { kind: 'lang-menu', chatId, owner };
     return { kind: 'board', chatId, owner, member: me ? owner : btnTarget };
   }
+  // ✏️ 수정 중(compose.edit: 고칠 미션 — 지금 DB 의 것, 없어졌으면 null): 보낸 글이 그 미션의 새 내용(미션 하나)
+  if (compose && compose.edit !== undefined && owner && !text.startsWith('/')) {
+    const em = compose.edit;
+    if (!ADMIN_ROLES.has(owner.role)) return { kind: 'act-denied', chatId, owner, action: 'edit', text: t.manageAdmin };
+    if (!em || em.status !== 'todo' || em.assignee !== compose.target.id) return { kind: 'act-denied', chatId, owner, action: 'edit', text: t.changed };
+    const it = parseEdit(text);
+    if (!it.title) return { kind: 'act-error', chatId, error: t.empty };
+    if (it.title.length > 200 || it.detail.length > 4000) return { kind: 'act-error', chatId, error: t.editTooLong };
+    return { kind: 'act', action: 'edit', chatId, owner, target: compose.target, items: [it], picked: [{ id: em.id, title: em.title }] };
+  }
   if (compose && owner && !text.startsWith('/')) {
     const mode = sendMode(owner, compose.target);
     if (!mode) return { kind: 'act-denied', chatId, owner, action: 'add', text: sendDeniedText(owner, compose.target, members, lang) };
@@ -735,6 +828,11 @@ export function confirmText(d, picked = [], lang = 'ko') {
   const t = tr(lang);
   const n = esc(dn(d.target, lang));
   if (d.action === 'done') return [t.confirmDone(n), ...picked.map((x) => `• [${x.id}] ${esc(x.title)}`)].join('\n');
+  if (d.action === 'cancel') return [t.confirmCancel(n), ...picked.map((x) => `• [${x.id}] ${esc(x.title)}`)].join('\n');
+  if (d.action === 'edit') {
+    const it = d.items[0];
+    return [t.confirmEdit(n), t.editBefore(esc(picked[0]?.title || '')), t.editAfter(esc(it.title)), ...(it.detail ? [`<blockquote expandable>${esc(clip(it.detail, 600))}</blockquote>`] : [])].join('\n');
+  }
   const head = d.action === 'set' ? t.confirmSet(n) : d.action === 'request' ? t.confirmRequest(n) : t.confirmGive(n);
   return [head, ...d.items.slice(0, 10).map((it) => `• ${esc(it.title)}`), ...(d.items.length > 10 ? [t.andMore(d.items.length - 10)] : [])].join('\n');
 }
@@ -745,6 +843,8 @@ export const ACTIONS = {
   request: { label: '미션요청', apply: (p) => (db, ms, actor) => requestMissions(db, p.targetId, p.items, actor.id, ms) },
   set: { label: '미션설정', apply: (p) => (db, ms, actor) => setMissions(db, p.targetId, p.items, actor.id, ms) },
   done: { label: '미션완료', apply: (p) => (db, ms, actor) => ({ done: completeMissions(db, p.targetId, p.ids, { by: actor.id, members: ms }), changed: true }) },
+  cancel: { label: '미션취소', apply: (p) => (db, ms, actor) => cancelMission(db, p.targetId, p.ids[0], actor.id, ms, undefined, p.was) },
+  edit: { label: '미션수정', apply: (p) => (db, ms, actor) => editMission(db, p.targetId, p.ids[0], p.items[0], actor.id, ms, undefined, p.was) },
 };
 
 // 저장 결과 문구(확인 메시지를 이 문구로 바꾼다). targetName: 보는 사람의 언어로 표시할 이름(이스케이프 전).
@@ -754,6 +854,8 @@ export function resultText(action, targetName, w, lang = 'ko') {
   const r = w.result;
   if (w.unchanged) return t.unchanged(n);
   const out = action === 'done' ? [t.didDone(n), ...r.done.map((m) => `• [${m.id}] ${esc(m.title)}`)]
+    : action === 'cancel' ? [t.didCancel(n), `• [${r.mission.id}] ${esc(r.mission.title)}`]
+    : action === 'edit' ? [t.didEdit(n), ...editLines(r, t)]
     : action === 'set' ? [t.didSet(n, r.added.length, r.kept.length, r.replaced.length)]
       : [action === 'request' ? t.didRequest(n) : t.didGive(n), ...r.added.map((m) => `• [${m.id}] ${esc(m.title)}`), ...(r.skipped.length ? [t.skipped(r.skipped.map(esc).join(', '))] : [])];
   out.push('', action === 'request' ? t.afterRequest(n) : action === 'done' ? t.afterDone : t.afterGive(n));

@@ -137,7 +137,7 @@ test('이름봇 화면: 본인은 ✅ 번호 버튼(미션 ID)·받은 요청 �
   const ids = openMissions(db, 'minho').map((m) => m.id);
   const req = pendingRequests(db, 'minho')[0];
   const own = boardKeyboard(MINHO, MINHO, db);
-  assert.deepEqual(datas(own), [...ids.map((id) => `c:${id}`), `a:${req.id}`, `n:${req.id}`, 'v:minho']);
+  assert.deepEqual(datas(own), [...ids.map((id) => `c:${id}`), `a:${req.id}`, `n:${req.id}`, 'm:minho', 'v:minho'], '관리자는 ✏️ 수정·취소도');
   assert.deepEqual(own.inline_keyboard[0].map((b) => b.text), ['✅ 1', '✅ 2']);
   assert.match(boardText(MINHO, MINHO, db, M), /📨 <b>받은 요청 1개<\/b>[\s\S]*요청 1\. 회의록 정리 — 네이뜬님[\s\S]*✅ 번호/);
   assert.deepEqual(datas(boardKeyboard(MINHO, CHANGMIN, db)), ['s:changmin', 'v:changmin']);

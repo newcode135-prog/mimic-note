@@ -16,7 +16,7 @@
 import {
   ADMIN_ROLES, esc, normTitle, openMissions, pendingRequests, menuKeyboard, menuText, decide, confirmText, resolveRefs, boardText, boardKeyboard, teamText, sentText,
   decideCallback, composePrompt, requestNotice, respondNotice, respondRequest, setLang, ACTIONS, resultText, langKeyboard,
-  tr, dn, langOf, guessLang, findMember, LANG_NAMES,
+  tr, dn, langOf, guessLang, findMember, LANG_NAMES, manageText, manageKeyboard, editPrompt, changeNotice,
 } from './core.mjs';
 
 export const PENDING_SEC = 600; // 확인 버튼·📨 쓰기는 10분
@@ -52,9 +52,26 @@ export async function handleUpdate(u, ctx) {
     const t = tr(lang);
     const key = ctx.randomKey();
     // targetName: 커밋 메시지용(한글 이름), shown: 화면에 보일 이름(누른 사람의 언어)
-    await ctx.kv.put(`pend:${key}`, { action: d.action, chatId: replyTo, fromId, ownerId: d.owner.id, targetId: d.target.id, targetName: d.target.name, shown: dn(d.target, lang), lang, items: d.items || [], ids: picked.map((x) => x.id), at: Date.now() }, PENDING_SEC);
-    const yes = { add: t.yesAdd, request: t.yesRequest, set: t.yesSet, done: t.yesDone }[d.action];
-    await send(replyTo, confirmText(d, picked, lang), { reply_markup: { inline_keyboard: [[{ text: yes, callback_data: `g:${key}` }, { text: t.cancelBtn, callback_data: `x:${key}` }]] } });
+    // was: 취소·수정 확인 화면에 보여 준 지금 제목(저장 때 그사이 바뀌었는지 본다)
+    const was = d.action === 'cancel' || d.action === 'edit' ? { was: picked[0]?.title ?? null } : {};
+    await ctx.kv.put(`pend:${key}`, { action: d.action, chatId: replyTo, fromId, ownerId: d.owner.id, targetId: d.target.id, targetName: d.target.name, shown: dn(d.target, lang), lang, items: d.items || [], ids: picked.map((x) => x.id), ...was, at: Date.now() }, PENDING_SEC);
+    const yes = { add: t.yesAdd, request: t.yesRequest, set: t.yesSet, done: t.yesDone, cancel: t.yesCancel, edit: t.yesEdit }[d.action];
+    const no = d.action === 'cancel' ? t.keepBtn : t.cancelBtn; // [🗑 미션 취소하기] 옆에 [취소]를 두면 헷갈려서
+    await send(replyTo, confirmText(d, picked, lang), { reply_markup: { inline_keyboard: [[{ text: yes, callback_data: `g:${key}` }, { text: no, callback_data: `x:${key}` }]] } });
+  }
+
+  // 취소·수정 알림: 담당자와 미션을 준 사람에게(누른 사람 본인은 빼고), 받는 사람의 언어로
+  async function tellChange(action, w) {
+    const m = w.result.mission;
+    const assignee = w.members.find((x) => x.id === m.assignee);
+    for (const to of new Set([m.assignee, m.createdBy])) {
+      if (!to || to === w.actor.id || !assignee || !w.members.some((x) => x.id === to)) continue;
+      const chat = await ctx.chatOf(to);
+      if (!chat) continue;
+      const l = langOf(w.db, to);
+      await send(chat, changeNotice(action, w.result, w.actor, assignee, to === m.assignee, l), { reply_markup: { inline_keyboard: [[{ text: tr(l).viewBtn(dn(assignee, l)), callback_data: `v:${assignee.id}` }]] } })
+        .catch((e) => ctx.log(`${action} 알림 실패: ${e.message}`));
+    }
   }
 
   async function onCallback(cq) {
@@ -72,12 +89,12 @@ export async function handleUpdate(u, ctx) {
       const t = tr(lang);
       await answer();
       if (Date.now() - p.at > PENDING_SEC * 1000) return void (await edit(replyTo, mid, t.timedOut));
-      if (data[0] !== 'g') return void (await edit(replyTo, mid, t.cancelled));
+      if (data[0] !== 'g') return void (await edit(replyTo, mid, p.action === 'cancel' ? t.kept : t.cancelled));
       await edit(replyTo, mid, t.saving); // 버튼을 없애 두 번 눌리지 않게
       const spec = ACTIONS[p.action];
       if (!spec) return void (await edit(replyTo, mid, t.unknownBtn));
       try {
-        const w = await ctx.save(spec.apply(p), (r) => `${p.targetName} ${spec.label}${r.added ? ` ${r.added.length}개` : ''}`, p.ownerId);
+        const w = await ctx.save(spec.apply(p), (r) => `${p.targetName} ${spec.label}${r.added ? ` ${r.added.length}개` : ''}${r.mission ? ` ${r.mission.id}` : ''}`, p.ownerId);
         const shown = p.shown || p.targetName;
         await edit(replyTo, mid, resultText(p.action, shown, w, lang), { inline_keyboard: [[{ text: t.viewBtn(shown), callback_data: `v:${p.targetId}` }]] });
         ctx.log(`${w.actor.name} → ${p.targetName} ${spec.label} (${w.commit ? w.commit.slice(0, 7) : '변경 없음'})`);
@@ -88,10 +105,15 @@ export async function handleUpdate(u, ctx) {
             await send(to, n.text, { reply_markup: n.reply_markup }).catch((e) => send(replyTo, t.notifyFail(esc(shown), esc(e.message))));
           } else await send(replyTo, t.targetUnlinked(esc(shown)));
         }
+        if ((p.action === 'cancel' || p.action === 'edit') && !w.unchanged) await tellChange(p.action, w).catch((e) => ctx.log(`${p.action} 알림 실패: ${e.message}`));
       } catch (e) {
         try {
           const { db: now } = await ctx.state();
-          if (applied(p, now)) return void (await edit(replyTo, mid, (p.action === 'done' ? t.alreadyDone : t.alreadySaved)(esc(p.shown || p.targetName))));
+          if (applied(p, now)) return void (await edit(replyTo, mid, (p.action === 'done' ? t.alreadyDone : p.action === 'cancel' ? t.alreadyCancelled : t.alreadySaved)(esc(p.shown || p.targetName))));
+          if (p.action === 'cancel' || p.action === 'edit') { // 그사이 완료·취소되거나 다른 관리자가 고침 → 누른 사람의 언어로 안내
+            const m = now.missions.find((x) => x.id === p.ids?.[0]);
+            if (!m || m.status !== 'todo' || (p.was != null && m.title !== p.was)) return void (await edit(replyTo, mid, t.changed));
+          }
         } catch { /* 아래 실패 표시 */ }
         await edit(replyTo, mid, t.saveFail(esc(e.message)));
       }
@@ -123,6 +145,16 @@ export async function handleUpdate(u, ctx) {
     } else if (d.kind === 'confirm-done') {
       await answer();
       await ask(String(cq.from?.id), { action: 'done', owner: viewer, target: d.target }, d.picked);
+    } else if (d.kind === 'manage') {
+      await answer();
+      await edit(replyTo, mid, manageText(d.member, db, lang), manageKeyboard(d.member, db, lang));
+    } else if (d.kind === 'confirm-cancel') {
+      await answer();
+      await ask(String(cq.from?.id), { action: 'cancel', owner: viewer, target: d.target }, d.picked);
+    } else if (d.kind === 'edit-start') {
+      await answer();
+      await ctx.kv.put(`compose:${replyTo}`, { target: d.target.id, edit: d.mission.id, at: Date.now() }, PENDING_SEC);
+      await send(replyTo, editPrompt(d.target, d.mission, db, lang));
     } else if (d.kind === 'respond') {
       const busyKey = `busy:${d.mission.id}`;
       if (await ctx.kv.get(busyKey)) return answer(t.busy);
@@ -173,7 +205,13 @@ export async function handleUpdate(u, ctx) {
     const lkTarget = lk && findMember(lk[1] || lk[2], members);
     if (lkTarget && owner) return void (await send(replyTo, await ctx.makeLink(owner, lkTarget, members)));
     const chatOwners = new Map([[replyTo, ownerId]]); // 판단에는 보낸 사람 것만 있으면 된다
-    const d = decide(msg, { members, chatOwners, compose: ct ? { target: ct } : null, lang });
+    // ✏️ 수정 중이면 고칠 미션도 넘긴다(지금 DB 의 것 — 그사이 없어졌으면 null)
+    const compose = ct ? { target: ct, ...(c.edit ? { edit: db.missions.find((x) => x.id === c.edit) || null } : {}) } : null;
+    let d = decide(msg, { members, chatOwners, compose, lang });
+    // ✏️ 같은 사람의 다른 남은 미션과 제목이 같으면 확인 전에 알려 다시 적게 한다(쓰기 상태는 남김)
+    if (d.kind === 'act' && d.action === 'edit' && openMissions(db, d.target.id).some((x) => x.id !== d.picked[0].id && normTitle(x.title) === normTitle(d.items[0].title))) {
+      d = { kind: 'act-error', chatId: replyTo, error: t.editDuplicate(d.items[0].title) };
+    }
     if (c && d.kind !== 'act-error') await ctx.kv.del(`compose:${replyTo}`); // 내용이 잘못됐으면 다시 적을 수 있게 남겨 둔다
     if (d.kind === 'ignore') return;
     if (d.kind === 'link') return void (await send(replyTo, t.alreadyLinked(esc(dn(owner, lang))))); // 남의 링크를 누름 — 연결은 그대로
@@ -191,7 +229,7 @@ export async function handleUpdate(u, ctx) {
       let picked = [];
       if (d.action === 'done') {
         try { picked = resolveRefs(db, d.target.id, d.refs); } catch (e) { return void (await send(replyTo, esc(e.ref != null ? t.notFound(e.ref, e.left) : e.message))); }
-      }
+      } else if (d.picked) picked = d.picked; // ✏️ 수정: 고칠 미션
       await ask(String(msg.from?.id), d, picked);
     }
   }
@@ -201,6 +239,13 @@ export async function handleUpdate(u, ctx) {
 export function applied(p, db) {
   const titles = (list) => new Set(list.map((m) => normTitle(m.title)));
   if (p.action === 'done') return p.ids.length > 0 && p.ids.every((id) => db.missions.find((m) => m.id === id)?.status === 'done');
+  if (p.action === 'cancel') return p.ids.length > 0 && p.ids.every((id) => { const m = db.missions.find((x) => x.id === id); return m?.status === 'replaced' && Boolean(m.cancelledBy); });
+  if (p.action === 'edit') { // editMission 과 같은 규칙: 제목은 그대로 비교, 설명은 새로 적었을 때만
+    const it = p.items?.[0] || {};
+    const m = db.missions.find((x) => x.id === p.ids?.[0]);
+    const d = String(it.detail || '').trim();
+    return m?.status === 'todo' && m.title === String(it.title || '').trim() && (!d || (m.detail || '') === d);
+  }
   const items = (p.items || []).map((it) => normTitle(it.title)).filter(Boolean);
   if (!items.length) return false;
   const have = titles(p.action === 'request' ? pendingRequests(db, p.targetId) : openMissions(db, p.targetId));

@@ -218,7 +218,7 @@ test('워커 이름봇: 본인은 ✅ 버튼, 남은 주기/요청 버튼, 팀 �
   await w.importer({ owners: { 1002: 'minho', 1004: 'nathan' }, codes: [], verified: w.root });
   await w.msg(1002, '민호봇');
   assert.match(w.lastText(), /민호님의 미션[\s\S]*1️⃣ 로그인 UI 개발[\s\S]*✅ 번호/);
-  assert.deepEqual(datas(w.lastMarkup()), ['c:M-0001', 'c:M-0002', 'v:minho']);
+  assert.deepEqual(datas(w.lastMarkup()), ['c:M-0001', 'c:M-0002', 'm:minho', 'v:minho']);
   await w.msg(1002, '창민봇');
   assert.match(w.lastText(), /창민님에게 미션을 줄 수 있어요/);
   assert.deepEqual(datas(w.lastMarkup()), ['s:changmin', 'v:changmin']);
@@ -295,6 +295,95 @@ test('워커 ✅ 완료·언어: 버튼으로 완료(확인 한 번 더), 🌐 E
   assert.match(w.lastText(), /English from now on[\s\S]*Minho, here's how it works/);
   await w.msg(1002, 'Minho bot');
   assert.match(w.lastText(), /👤 <b>Minho's missions<\/b>[\s\S]*📌 1 mission left/);
+});
+
+test('워커 ✏️ 수정·취소: 관리자 이름봇 → 수정·취소 → 🗑 확인(그대로 두기 가능) → 보관, ✏️ → 새 내용 → 고침, 담당자·준 사람에게 알림', async () => {
+  const w = world();
+  await w.importer({ owners: { 1001: 'changmin', 1002: 'minho', 1004: 'nathan' }, codes: [], verified: w.root });
+  const toChat = (chat) => w.tg.filter((c) => c.method === 'sendMessage' && c.body.chat_id === chat);
+  await w.msg(1002, '네이뜬 개발 환경 설치');
+  await w.tap(1002, w.askData()); // M-0003(민호가 줌)
+  await w.tap(1002, 'v:nathan');
+  assert.deepEqual(datas(w.lastMarkup()), ['s:nathan', 'm:nathan', 'v:nathan']);
+  await w.tap(1002, 'm:nathan');
+  assert.match(w.lastText(), /네이뜬님의 미션[\s\S]*1️⃣ 개발 환경 설치[\s\S]*🗑 번호/);
+  assert.deepEqual(datas(w.lastMarkup()), ['u:M-0003', 'd:M-0003', 'v:nathan']);
+  await w.tap(1004, 'd:M-0003');
+  assert.match(w.toast(), /관리자만/, '팀원은 본인 미션도 취소 못 함');
+  // 🗑 → 확인: [🗑 미션 취소하기][↩️ 그대로 두기]
+  await w.tap(1002, 'd:M-0003');
+  assert.match(w.lastText(), /<b>네이뜬<\/b>님의 이 미션을 취소할까요\?[\s\S]*• \[M-0003\] 개발 환경 설치/);
+  assert.deepEqual(w.lastMarkup().inline_keyboard[0].map((b) => b.text), ['🗑 미션 취소하기', '↩️ 그대로 두기']);
+  await w.tap(1002, w.lastMarkup().inline_keyboard[0][1].callback_data);
+  assert.equal(w.lastText(), '↩️ 그대로 뒀어요.');
+  assert.equal(w.dbAtHead().missions.find((m) => m.id === 'M-0003').status, 'todo');
+  await w.tap(1002, 'd:M-0003');
+  const before = toChat('1004').length;
+  await w.tap(1002, w.askData());
+  const gone = w.dbAtHead().missions.find((m) => m.id === 'M-0003');
+  assert.deepEqual([gone.status, gone.cancelledBy], ['replaced', 'minho']);
+  assert.match(w.commits.get(w.state.head).message, /^미믹노트: 네이뜬 미션취소 M-0003 \(by 민호·텔레그램, newcode135-prog 계정으로 저장\)$/);
+  assert.match(w.tg.filter((c) => c.method === 'editMessageText').at(-1).body.text, /🗑 네이뜬님의 미션을 취소했어요\n• \[M-0003\] 개발 환경 설치/);
+  const notice = toChat('1004').at(-1);
+  assert.equal(toChat('1004').length, before + 1);
+  assert.equal(notice.body.text, '🗑 <b>미션이 취소됐어요</b>\n\n민호님이 내 미션을 취소했어요:\n• 개발 환경 설치');
+  assert.deepEqual(datas(notice.body.reply_markup), ['v:nathan']);
+  assert.ok(!toChat('1002').some((c) => /미션이 취소됐어요/.test(c.body.text)), '누른 사람(준 사람)에게는 알림 안 감');
+  await w.tap(1002, 'd:M-0003');
+  assert.match(w.toast(), /이미 완료됐거나 바뀐/);
+  // ✏️ → 새 내용 → 확인 → 고침. 창민이 준 미션이라 창민(영어)에게 알림
+  await w.tap(1001, 'l:en');
+  await w.tap(1002, 'u:M-0001');
+  assert.match(w.lastText(), /<b>민호<\/b>님의 1번 미션을 고쳐요\.\n지금: <code>로그인 UI 개발<\/code>/);
+  await w.msg(1002, '1. 로그인 UI 개발 (다크 모드)\n   시안 v2 기준');
+  assert.match(w.lastText(), /이렇게 고칠까요\?\n• 지금: 로그인 UI 개발\n• 새로: 로그인 UI 개발 \(다크 모드\)\n<blockquote expandable>시안 v2 기준<\/blockquote>/);
+  await w.tap(1002, w.askData());
+  const m1 = w.dbAtHead().missions.find((m) => m.id === 'M-0001');
+  assert.deepEqual([m1.title, m1.detail, m1.editedBy, m1.status], ['로그인 UI 개발 (다크 모드)', '시안 v2 기준', 'minho', 'todo']);
+  assert.match(w.commits.get(w.state.head).message, /^미믹노트: 민호 미션수정 M-0001 /);
+  assert.equal(toChat('1001').at(-1).body.text, '✏️ <b>Mission changed</b>\n\nMinho edited their own mission:\n• 로그인 UI 개발\n→ 로그인 UI 개발 (다크 모드)');
+  assert.deepEqual(datas(toChat('1001').at(-1).body.reply_markup), ['v:minho']);
+  assert.ok(!toChat('1002').some((c) => /미션이 바뀌었어요/.test(c.body.text)), '본인이 고친 본인 미션은 본인에게 알림 안 감');
+  // 같은 내용으로 다시 고치면 변경 없음(커밋 없음)
+  const commits = w.state.botCommits;
+  await w.tap(1002, 'u:M-0001');
+  await w.msg(1002, '로그인 UI 개발 (다크 모드)');
+  await w.tap(1002, w.askData());
+  assert.match(w.lastText(), /변경 없음/);
+  assert.equal(w.state.botCommits, commits);
+  // 수정 중에 "취소"면 그만두고, 그 뒤 글은 다시 미션 명령으로
+  await w.tap(1002, 'u:M-0002');
+  await w.msg(1002, '취소');
+  assert.equal(w.lastText(), '취소했어요.');
+  assert.equal(w.kv.has('app:compose:1002'), false);
+});
+
+test('리뷰 회귀(워커): 같은 제목은 확인 전에 그 사람 언어로 안내(쓰기 유지), 두 확인이 겹치면 늦은 쪽은 "바뀐 미션", 이미 취소된 것은 "이미 취소"', async () => {
+  const w = world();
+  await w.importer({ owners: { 1002: 'minho', 1003: 'yuri' }, codes: [], verified: w.root });
+  await w.tap(1003, 'l:en');
+  await w.tap(1003, 'u:M-0001');
+  await w.msg(1003, '파일 다운로드 API 테스트'); // 민호의 2번과 같은 제목
+  assert.equal(w.lastText(), 'There is already a mission with this title: 파일 다운로드 API 테스트 — send a different title.');
+  assert.equal(w.kv.has('app:compose:1003'), true, '다른 제목으로 다시 보낼 수 있게 쓰기 상태 유지');
+  await w.msg(1003, '로그인 UI 개발 v2');
+  assert.match(w.lastText(), /Change <b>Minho<\/b>'s mission like this\?/);
+  const late = w.askData(); // 유리의 확인(지금: 로그인 UI 개발)
+  await w.tap(1002, 'u:M-0001');
+  await w.msg(1002, '로그인 UI 개발 v3');
+  await w.tap(1002, w.askData()); // 민호가 먼저 v3 로
+  assert.equal(w.dbAtHead().missions.find((m) => m.id === 'M-0001').title, '로그인 UI 개발 v3');
+  await w.tap(1003, late);
+  assert.equal(w.lastText(), 'Already done or changed. Try 🔄 Refresh.', '늦은 확인은 보지 못한 v3 를 덮어쓰지 않음');
+  assert.equal(w.dbAtHead().missions.find((m) => m.id === 'M-0001').title, '로그인 UI 개발 v3');
+  // 🗑 두 번 눌러 확인 두 개 → 하나 저장 뒤 나머지는 "이미 취소"
+  await w.tap(1002, 'd:M-0002');
+  const first = w.askData();
+  await w.tap(1002, 'd:M-0002');
+  const second = w.askData();
+  await w.tap(1002, first);
+  await w.tap(1002, second);
+  assert.equal(w.lastText(), '🗑 민호님의 그 미션은 이미 취소돼 있어요.');
 });
 
 test('워커: main 에 확인 안 된 변경이 있거나, 확인과 저장 사이에 끼어들거나, 확인 전 변경을 되돌린 push 위에는 저장하지 않음', async () => {
