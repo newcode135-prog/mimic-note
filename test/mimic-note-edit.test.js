@@ -109,7 +109,12 @@ test('✏️ 수정 중 보낸 글: 미션 하나면 확인으로, 여러 개·�
   const ok = d(1002, '로그인 화면\n모바일 포함');
   assert.deepEqual([ok.kind, ok.action, ok.target.id, ok.items, ok.picked], ['act', 'edit', 'nathan', [{ title: '로그인 화면 모바일 포함', detail: '' }], [{ id: m2.id, title: '로그인 화면' }]]);
   assert.deepEqual(d(1002, '1. 로그인 화면\n   모바일도').items, [{ title: '로그인 화면', detail: '모바일도' }], '번호 하나 + 들여쓴 설명');
-  assert.match(d(1002, '1. A\n2. B').error, /미션 하나로/);
+  // 리뷰 회귀: 안내문 그대로 — 번호가 없으면 길이·글머리표와 상관없이 글 전체가 제목(설명 그대로), 첫 줄 번호 뒤는 전부 설명
+  assert.deepEqual(d(1002, '로그인 화면\n- 버튼 색').items, [{ title: '로그인 화면 - 버튼 색', detail: '' }], '첫 줄을 버리지 않음');
+  assert.deepEqual(d(1002, '1. 새 제목\n- a\n- b').items, [{ title: '새 제목', detail: '- a\n- b' }], '번호 뒤 글머리표 줄은 설명');
+  assert.deepEqual(d(1002, '1. A\n2. B').items, [{ title: 'A', detail: '2. B' }]);
+  assert.match(d(1002, `${'가'.repeat(120)}\n${'나'.repeat(100)}`).error, /제목은 200자/, '200자 넘는 제목은 설명으로 몰래 바꾸지 않고 안내');
+  assert.match(d(1002, `1. 제목\n${'설'.repeat(4001)}`).error, /설명은 4000자/);
   assert.equal(d(1002, '취소').kind, 'cancel');
   assert.equal(d(1002, '유리봇').kind, 'board');
   assert.equal(d(1002, '/menu').kind, 'menu');

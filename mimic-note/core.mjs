@@ -204,6 +204,15 @@ export function parseMissionList(text) {
   return items;
 }
 
+// ✏️ 수정 글(미션 하나): 첫 줄에 번호("1. 새 제목")가 있으면 그 줄이 제목, 다음 줄부터 전부 설명(-·• 줄도 설명).
+// 번호가 없으면 글 전체가 제목(줄은 띄어쓰기로 이어 붙임, 설명은 비워 둠 → editMission 이 기존 설명을 그대로 둔다).
+export function parseEdit(text) {
+  const lines = String(text || '').replace(/\r/g, '').split('\n').filter((l) => l.trim());
+  const head = lines[0]?.match(ITEM_RE);
+  if (head) return { title: head[2].trim(), detail: lines.slice(1).map((l) => l.trim()).join('\n') };
+  return { title: lines.map((l) => l.trim()).join(' '), detail: '' };
+}
+
 function requireAdmin(by, members, what) {
   const author = requireMember(by, members);
   if (!ADMIN_ROLES.has(author.role)) throw new Error(`${author.name}님은 관리자가 아니라 ${what} 수 없습니다.`);
@@ -779,10 +788,10 @@ export function decide(msg, { members, chatOwners, compose = null, lang = 'ko' }
     const em = compose.edit;
     if (!ADMIN_ROLES.has(owner.role)) return { kind: 'act-denied', chatId, owner, action: 'edit', text: t.manageAdmin };
     if (!em || em.status !== 'todo' || em.assignee !== compose.target.id) return { kind: 'act-denied', chatId, owner, action: 'edit', text: t.changed };
-    const p = parseItems(chatId, text, t);
-    if (!p.items) return p;
-    if (p.items.length !== 1) return { kind: 'act-error', chatId, error: t.editOne };
-    return { kind: 'act', action: 'edit', chatId, owner, target: compose.target, items: p.items, picked: [{ id: em.id, title: em.title }] };
+    const it = parseEdit(text);
+    if (!it.title) return { kind: 'act-error', chatId, error: t.empty };
+    if (it.title.length > 200 || it.detail.length > 4000) return { kind: 'act-error', chatId, error: t.editTooLong };
+    return { kind: 'act', action: 'edit', chatId, owner, target: compose.target, items: [it], picked: [{ id: em.id, title: em.title }] };
   }
   if (compose && owner && !text.startsWith('/')) {
     const mode = sendMode(owner, compose.target);
