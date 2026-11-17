@@ -1,5 +1,5 @@
 {
-  "nextId": 43,
+  "nextId": 44,
   "missions": [
     {
       "id": "M-0001",
@@ -492,6 +492,17 @@
       "status": "todo",
       "createdBy": "yuri",
       "createdAt": "2026-11-15T09:30:42.591Z",
+      "doneAt": null
+    },
+    {
+      "id": "M-0043",
+      "assignee": "yuri",
+      "order": 15,
+      "title": "금요일날 파티장소 근처 애프터파티 장소 찾기",
+      "detail": "",
+      "status": "todo",
+      "createdBy": "yuri",
+      "createdAt": "2026-11-17T07:14:12.256Z",
       "doneAt": null
     }
   ]
